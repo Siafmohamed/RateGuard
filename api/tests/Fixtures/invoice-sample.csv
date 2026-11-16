@@ -1,0 +1,5 @@
+tracking_number,charge_type,description,billed_weight_kg,amount
+1ZDEMO0001,Ground Transportation,Ground transportation,3.00,15.00
+1ZDEMO0001,Fuel Surcharge,Fuel surcharge,,1.80
+1ZDEMO0002,Residential,Residential delivery,,4.95
+1ZDEMO0002,Ground Transportation,Ground transportation,3.00,15.50

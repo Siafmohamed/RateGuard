@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+    <php>
+        <env name="APP_ENV" value="testing"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="BROADCAST_CONNECTION" value="null"/>
+        <!-- force + matching <server>: the container exports CACHE_STORE=redis, and
+             PHPUnit will not overwrite an already-set env var without force="true".
+             The <server> entry is required too: Laravel's Env repository reads
+             $_SERVER before $_ENV, and the container exported the var into $_SERVER.
+             Without this, content caching and the rate limiter leak across tests. -->
+        <env name="CACHE_STORE" value="array" force="true"/>
+        <server name="CACHE_STORE" value="array"/>
+        <!-- force + matching <server>: the container exports DB_CONNECTION=mysql and
+             DB_DATABASE=rateguard into $_SERVER, and PHPUnit will not overwrite an
+             already-set env var without force="true". Without this, RefreshDatabase
+             runs against (and wipes) the real MySQL database. -->
+        <env name="DB_CONNECTION" value="sqlite" force="true"/>
+        <env name="DB_DATABASE" value=":memory:" force="true"/>
+        <env name="DB_URL" value="" force="true"/>
+        <server name="DB_CONNECTION" value="sqlite"/>
+        <server name="DB_DATABASE" value=":memory:"/>
+        <server name="DB_URL" value=""/>
+        <env name="MAIL_MAILER" value="array"/>
+        <!-- force: the containers export QUEUE_CONNECTION=redis, and PHPUnit
+             will not overwrite an env var that is already set without it.
+             The <server> entry is required too: Laravel's Env repository reads
+             $_SERVER before $_ENV, and the container exported the var into $_SERVER. -->
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <server name="QUEUE_CONNECTION" value="sync"/>
+        <env name="SESSION_DRIVER" value="array"/>
+        <env name="PULSE_ENABLED" value="false"/>
+        <env name="TELESCOPE_ENABLED" value="false"/>
+        <env name="NIGHTWATCH_ENABLED" value="false"/>
+    </php>
+</phpunit>

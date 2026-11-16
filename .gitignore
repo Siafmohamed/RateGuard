@@ -1,0 +1,50 @@
+# =============================================================================
+# RateGuard - repository-wide ignores
+# -----------------------------------------------------------------------------
+# The per-package ignore files (api/.gitignore, frontend/.gitignore) still
+# apply; this file covers the repo root and anything they miss.
+# =============================================================================
+
+# --- Secrets ---
+# Never commit a real environment file. The *.example files ARE committed on
+# purpose (they are the documented templates for local setup and CI), so they
+# are un-ignored last - the last matching rule wins in git.
+.env
+.env.*
+.env.local
+.env.*.local
+.env.production
+.env.backup
+!.env.example
+!.env.testing.example
+
+# --- Node / Vite ------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- PHP / Composer ---------------------------------------------------------
+vendor/
+auth.json
+_ide_helper.php
+
+# --- Laravel runtime state --------------------------------------------------
+*.log
+.phpunit.result.cache
+.phpunit.cache/
+api/storage/logs/*.log
+api/storage/framework/cache/data/*
+api/storage/framework/sessions/*
+api/storage/framework/views/*
+api/storage/framework/testing/*
+api/bootstrap/cache/*.php
+
+# --- OS / editor ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+Homestead.json
+Homestead.yaml

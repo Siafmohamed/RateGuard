@@ -1,0 +1,195 @@
+name: Deploy
+
+# Runs only when the "CI" workflow finishes on main. This trigger cannot fire
+# for a pull_request run on a feature branch (filtered by "branches"), and the
+# job additionally requires event == push, so PRs never reach production.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+# Never cancel a deploy that is already in flight; queue the next one instead.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production (VPS)
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Secrets/variables below are scoped to this environment, so a manual
+    # approval rule can be added in Settings > Environments > production.
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+    steps:
+      # Deploy exactly the commit CI tested (not whatever main points at now).
+      - name: Checkout the tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: frontend/package.json
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Check the deploy configuration
+        run: |
+          set -euo pipefail
+          missing=0
+          [ -n "$DEPLOY_HOST" ]     || { echo "::error::repository variable DEPLOY_HOST is not set"; missing=1; }
+          [ -n "$DEPLOY_USER" ]     || { echo "::error::repository variable DEPLOY_USER is not set"; missing=1; }
+          [ -n "$DEPLOY_PATH" ]     || { echo "::error::repository variable DEPLOY_PATH is not set"; missing=1; }
+          [ -n "$PRODUCTION_URL" ]  || { echo "::error::repository variable PRODUCTION_URL is not set"; missing=1; }
+          [ "$missing" -eq 0 ] || exit 1
+          # The path is interpolated into remote shell commands below.
+          case "$DEPLOY_PATH" in
+            /*) ;;
+            *) echo "::error::DEPLOY_PATH must be an absolute path"; exit 1 ;;
+          esac
+          case "$DEPLOY_PATH" in
+            *[!A-Za-z0-9._/-]*) echo "::error::DEPLOY_PATH contains unsupported characters"; exit 1 ;;
+          esac
+
+      # The key is written straight to a file and never echoed. GitHub also
+      # masks it in the log as a belt-and-braces measure.
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [ -n "$SSH_PRIVATE_KEY" ] || { echo "::error::secret SSH_PRIVATE_KEY is not set"; exit 1; }
+          [ -n "$SSH_KNOWN_HOSTS" ] || { echo "::error::secret SSH_KNOWN_HOSTS is not set"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host rateguard-deploy
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            Port $DEPLOY_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+          EOF
+          chmod 600 ~/.ssh/config
+          # Fails fast (and loudly) if the key/host do not actually work.
+          ssh -o BatchMode=yes rateguard-deploy 'echo ssh ok'
+
+      # Rollback point: tars up what is live right now, before it is replaced.
+      # The 5 most recent snapshots are kept.
+      - name: Snapshot the current release
+        run: |
+          set -euo pipefail
+          ssh rateguard-deploy "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          mkdir -p releases
+          if [ -f api/artisan ]; then
+            STAMP="$(date -u +%Y%m%d%H%M%S)"
+            tar --exclude='api/vendor' --exclude='api/node_modules' \
+                -czf "releases/$STAMP.tgz" api frontend/dist
+            echo "rollback snapshot written: releases/$STAMP.tgz"
+          else
+            echo "no previous release found - nothing to snapshot"
+          fi
+          ls -1t releases/*.tgz 2>/dev/null | tail -n +6 | xargs -r rm -f
+          REMOTE
+
+      # .env, vendor/, storage/ (uploads + logs) and the WordPress volumes are
+      # deliberately left alone: --exclude also protects them from --delete.
+      - name: Publish the API code
+        run: |
+          set -euo pipefail
+          rsync -az --delete -e ssh \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'vendor/' \
+            --exclude 'node_modules/' \
+            --exclude '.phpunit.cache/' \
+            --exclude 'storage/app/' \
+            --exclude 'storage/logs/' \
+            --exclude 'storage/framework/cache/data/' \
+            --exclude 'storage/framework/sessions/' \
+            --exclude 'storage/framework/views/' \
+            api/ "rateguard-deploy:$DEPLOY_PATH/api/"
+
+      # Nginx serves these straight off the host path docker-compose mounts.
+      - name: Publish the frontend build
+        run: |
+          set -euo pipefail
+          rsync -az --delete -e ssh frontend/dist/ "rateguard-deploy:$DEPLOY_PATH/frontend/dist/"
+
+      - name: Release (migrate, cache, restart workers)
+        run: |
+          set -euo pipefail
+          ssh rateguard-deploy "DEPLOY_PATH='$DEPLOY_PATH' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          docker compose exec -T php composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+          docker compose exec -T php php artisan migrate --force
+          docker compose exec -T php php artisan config:cache
+          docker compose exec -T php php artisan route:cache
+          # Tell the running worker to exit so the container restarts it on the
+          # new code (the queue service is `restart: unless-stopped`).
+          docker compose exec -T php php artisan queue:restart
+          # php-fpm holds opcache/old config in memory; recycle it last.
+          docker compose restart php
+          REMOTE
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          failed=0
+          for path in /api/v1/health /app/invoices; do
+            code=000
+            for attempt in 1 2 3 4 5 6; do
+              code=$(curl -sS -o /tmp/smoke.body -w '%{http_code}' --max-time 20 "$PRODUCTION_URL$path" || echo 000)
+              [ "$code" = "200" ] && break
+              sleep 5
+            done
+            if [ "$code" = "200" ]; then
+              echo "$path -> 200"
+            else
+              echo "::error::$path returned $code"
+              head -c 500 /tmp/smoke.body || true
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Failed
+        if: failure()
+        run: |
+          echo "::error::Deploy failed for ${{ github.event.workflow_run.head_sha }}."
+          echo "Roll back with the snapshot taken above, e.g.:"
+          echo "  ssh deploy@host 'cd <DEPLOY_PATH> && tar -xzf releases/<STAMP>.tgz \\"
+          echo "    && docker compose exec -T php composer install --no-dev -o \\"
+          echo "    && docker compose exec -T php php artisan config:cache \\"
+          echo "    && docker compose exec -T php php artisan route:cache \\"
+          echo "    && docker compose exec -T php php artisan queue:restart \\"
+          echo "    && docker compose restart php'"

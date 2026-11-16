@@ -1,0 +1,240 @@
+name: rateguard
+
+# =============================================================================
+# RateGuard - local / development orchestration
+# -----------------------------------------------------------------------------
+# Active services: php (Laravel API), nginx, queue worker, laravel_db, redis.
+# They ALL share a single network ("laravel") and reach each other by Compose
+# service name - never localhost.
+#
+# MinIO has been removed; uploads use the local disk (FILESYSTEM_DISK=local).
+# WordPress (headless CMS) runs on its own "wp_net" network; only "php" joins
+# both networks so Laravel can fetch content while WordPress cannot reach the
+# Laravel database.
+#
+# ALL values below use ${VAR:-default} so the file runs without a .env file.
+# Copy these defaults into a .env file to override them per environment.
+# =============================================================================
+
+# Shared config for the Laravel PHP-FPM container and the queue worker.
+# They run the SAME image, so we declare the common parts once (YAML anchor)
+# and reuse them with "<<: *php-common".
+x-php-common: &php-common
+  build:
+    # Context is the project root, because the Dockerfile lives in docker/php/.
+    context: .
+    dockerfile: docker/php/Dockerfile
+  image: rateguard/php:8.3
+  working_dir: /var/www/html
+  # The Laravel source live on the host, mounted into the container (dev only).
+  volumes:
+    - ./api:/var/www/html
+    # The built React SPA (`npm run build` in ./frontend). Laravel reads
+    # index.html from here through SPA_INDEX_PATH and injects the SEO head /
+    # initial data into it (App\Domain\Seo\SpaShell). The hashed bundles next to
+    # it are served as static files by Nginx, not by PHP.
+    - ./frontend/dist:/var/www/spa:ro
+  environment:
+    # --- Laravel runtime -----------------------------------------------------
+    APP_ENV: ${APP_ENV:-local}
+    APP_DEBUG: ${APP_DEBUG:-true}
+    # NOTE: internal hostnames are Compose service names, never localhost.
+    DB_CONNECTION: mysql
+    DB_HOST: laravel_db
+    DB_PORT: "3306"
+    DB_DATABASE: ${LARAVEL_DB_NAME:-rateguard}
+    DB_USERNAME: ${LARAVEL_DB_USER:-rateguard}
+    DB_PASSWORD: ${LARAVEL_DB_PASSWORD:-secret}
+    # --- Cache / queue -------------------------------------------------------
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    CACHE_STORE: redis
+    QUEUE_CONNECTION: redis
+    SESSION_DRIVER: redis
+    # --- File storage --------------------------------------------------------
+    FILESYSTEM_DISK: local
+    # --- SPA shell -----------------------------------------------------------
+    # The built React index.html Laravel serves (and injects the SEO head into)
+    # for both the Phase 5 content routes and every client route. Falls back to
+    # the Vite dev shell when the file is absent, i.e. before the first build.
+    SPA_INDEX_PATH: /var/www/spa/index.html
+  networks:
+    - laravel
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1) Laravel PHP-FPM (the API). No published port: only Nginx reaches it,
+  #    over the internal network, on php:9000.
+  # ---------------------------------------------------------------------------
+  php:
+    <<: *php-common
+    container_name: rateguard_php
+    # Do not start the app until MySQL is actually accepting connections.
+    depends_on:
+      laravel_db:
+        condition: service_healthy
+    # Laravel must reach BOTH its own services ("laravel") and WordPress
+    # ("wp_net"). This is the only service allowed on both networks.
+    networks:
+      - laravel
+      - wp_net
+
+  # ---------------------------------------------------------------------------
+  # 2) Nginx reverse proxy / web server for the Laravel app.
+  #    Listens on host:8000 -> container:80.
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: rateguard_nginx
+    depends_on:
+      php:
+        condition: service_started
+    ports:
+      - "8000:80"
+    volumes:
+      # Nginx needs to read the same public/ directory to serve static files.
+      - ./api:/var/www/html:ro
+      # Read-only: the built SPA bundles are served straight off disk by the
+      # /assets/ block in docker/nginx/default.conf (immutable, long-cached).
+      - ./frontend/dist:/var/www/spa:ro
+      # Replace the image's default vhost with ours.
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - laravel
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 3) Laravel queue worker. Same image as "php", different command.
+  #    Restarts until the app files (and vendor/) are available.
+  # ---------------------------------------------------------------------------
+  queue:
+    <<: *php-common
+    container_name: rateguard_queue
+    command: php artisan queue:work --tries=3 --sleep=3
+    # Do not even start the worker until the database and cache are READY.
+    depends_on:
+      laravel_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Give the worker time to finish the in-flight job before being killed.
+    stop_grace_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # 4) Laravel database (MySQL 8.4). Dedicated to the API.
+  # ---------------------------------------------------------------------------
+  laravel_db:
+    image: mysql:8.4
+    container_name: rateguard_laravel_db
+    environment:
+      MYSQL_DATABASE: ${LARAVEL_DB_NAME:-rateguard}
+      MYSQL_USER: ${LARAVEL_DB_USER:-rateguard}
+      MYSQL_PASSWORD: ${LARAVEL_DB_PASSWORD:-secret}
+      MYSQL_ROOT_PASSWORD: ${LARAVEL_DB_ROOT_PASSWORD:-rootsecret}
+    volumes:
+      - laravel_db_data:/var/lib/mysql
+    networks:
+      - laravel
+    healthcheck:
+      # "$$" escapes to a literal "$" so the container (not Compose) expands it.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 5) Redis 7 - cache, sessions and queue backend for Laravel.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rateguard_redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - laravel
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+# =============================================================================
+# WORDPRESS - headless CMS (Phase 4 content gateway)
+# -----------------------------------------------------------------------------
+# WordPress is reachable ONLY over the dedicated "wp_net" bridge. It shares no
+# network with laravel_db / redis / nginx, so it cannot resolve or reach the
+# Laravel database. Only the "php" service joins both networks.
+# =============================================================================
+  wordpress_db:
+    image: mysql:8.4
+    container_name: rateguard_wordpress_db
+    environment:
+      MYSQL_DATABASE: ${WP_DB_NAME:-wordpress}
+      MYSQL_USER: ${WP_DB_USER:-wordpress}
+      MYSQL_PASSWORD: ${WP_DB_PASSWORD:-secret}
+      MYSQL_ROOT_PASSWORD: ${WP_DB_ROOT_PASSWORD:-rootsecret}
+    volumes:
+      - wordpress_db_data:/var/lib/mysql
+    networks:
+      - wp_net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  wordpress:
+    image: wordpress:php8.3-apache
+    container_name: rateguard_wordpress
+    depends_on:
+      wordpress_db:
+        condition: service_healthy
+    ports:
+      # Published on localhost only, for local setup. remove in prod (private
+      # network / VPN only).
+      - "127.0.0.1:8081:80"
+    environment:
+      WORDPRESS_DB_HOST: wordpress_db:3306
+      WORDPRESS_DB_NAME: ${WP_DB_NAME:-wordpress}
+      WORDPRESS_DB_USER: ${WP_DB_USER:-wordpress}
+      WORDPRESS_DB_PASSWORD: ${WP_DB_PASSWORD:-secret}
+      # Application passwords (Basic auth to the REST API) are only allowed over
+      # plain HTTP when the environment is local/development.
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_ENVIRONMENT_TYPE', 'local');
+    volumes:
+      - wordpress_data:/var/www/html
+      # Optional: mount custom themes/plugins from ./web.
+      # - ./web:/var/www/html/wp-content
+    networks:
+      - wp_net
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# -----------------------------------------------------------------------------
+# "laravel" - the API stack (php, nginx, queue, laravel_db, redis).
+# "wp_net"  - the WordPress stack (wordpress, wordpress_db). The "php" service
+#             is the only bridge between the two.
+# =============================================================================
+networks:
+  laravel:
+    driver: bridge
+  wp_net:
+    driver: bridge
+
+# =============================================================================
+# Named volumes: data survives `docker compose down` and container recreation.
+# =============================================================================
+volumes:
+  laravel_db_data:
+  redis_data:
+  wordpress_db_data:
+  wordpress_data:

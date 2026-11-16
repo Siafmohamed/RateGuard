@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind owns layout, spacing and responsiveness (see the project convention:
+ * MUI-like component styling is not used here, so plain utility classes plus a
+ * couple of small primitives in src/components/ui).
+ */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
+}

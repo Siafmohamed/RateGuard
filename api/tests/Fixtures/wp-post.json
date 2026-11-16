@@ -1,0 +1,55 @@
+{
+    "id": 1234,
+    "date_gmt": "2026-10-01T12:00:00",
+    "modified_gmt": "2026-10-02T08:30:00",
+    "slug": "hello-rateguard",
+    "status": "publish",
+    "type": "post",
+    "title": {
+        "rendered": "Hello &amp; &quot;RateGuard&quot; &mdash; <em>Guide</em>"
+    },
+    "content": {
+        "rendered": "<p>Intro &amp; details.</p><script>alert('xss')</script><p onclick=\"steal()\">Safe <strong>bold</strong></p><a href=\"javascript:alert(1)\">bad link</a><a href=\"https://example.com/docs\">good link</a><img src=\"https://example.com/a.png\" onerror=\"alert(1)\"><iframe src=\"https://evil.test\"></iframe><style>body{color:red}</style>"
+    },
+    "excerpt": {
+        "rendered": "<p>Short &amp; sweet summary.</p>"
+    },
+    "yoast_head_json": {
+        "title": "Hello & RateGuard",
+        "description": "A short guide to shipping audits."
+    },
+    "_embedded": {
+        "author": [
+            {
+                "id": 7,
+                "name": "Jane Doe",
+                "slug": "jane-doe"
+            }
+        ],
+        "wp:term": [
+            [
+                {
+                    "id": 5,
+                    "taxonomy": "category",
+                    "slug": "logistics",
+                    "name": "Logistics &amp; Ops"
+                }
+            ],
+            [
+                {
+                    "id": 9,
+                    "taxonomy": "post_tag",
+                    "slug": "audit",
+                    "name": "Audit"
+                }
+            ]
+        ]
+    },
+    "_links": {
+        "self": [
+            {
+                "href": "http://wordpress/index.php?rest_route=/wp/v2/posts/1234"
+            }
+        ]
+    }
+}
