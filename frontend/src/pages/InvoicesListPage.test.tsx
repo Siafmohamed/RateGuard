@@ -38,6 +38,18 @@ function serve(status: string) {
 
       return HttpResponse.json({ data: [invoice(status)], meta: META })
     }),
+    // The page also reads the plan quota to annotate the upload button; keep it
+    // well under the limit so the polling assertions are what is exercised.
+    http.get('/api/v1/billing', () =>
+      HttpResponse.json({
+        plan: { code: 'free', name: 'Free', price_cents: 0, invoice_limit: 10 },
+        status: 'active',
+        renews_at: null,
+        ends_at: null,
+        invoices_used: 1,
+        plans: [],
+      }),
+    ),
   )
 
   return { count: () => requests }

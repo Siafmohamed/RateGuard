@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\Content;
 
+use App\Domain\Content\Models\Post;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -9,9 +11,15 @@ use Tests\TestCase;
  * The public content contract React depends on. These routes are intentionally
  * unauthenticated and unscoped, and every failure mode is an explicit status:
  * 404 for a missing slug, 422 for bad input, 503 when WordPress is unreachable.
+ *
+ * Posts are imported into the local `posts` table (SyncPostsCommand) and served
+ * from there, so they no longer touch WordPress at request time - only pages and
+ * categories still fan out to the CMS.
  */
 class ContentEndpointsTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -29,37 +37,62 @@ class ContentEndpointsTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function fixture(): array
+    private function pageFixture(): array
     {
-        $path = base_path('tests/Fixtures/wp-post.json');
-
-        return json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        return [
+            'id' => 7,
+            'slug' => 'about-us',
+            'title' => ['rendered' => 'About Us'],
+            'excerpt' => ['rendered' => 'About the team.'],
+            'content' => ['rendered' => '<p>Hello</p>'],
+            'date_gmt' => '2026-01-01T00:00:00',
+            'modified_gmt' => '2026-01-01T00:00:00',
+        ];
     }
 
-    private function fakePosts(string $total = '1', string $totalPages = '1'): void
+    /**
+     * A published post as the importer would have stored it.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    private function createPost(array $overrides = []): Post
     {
-        Http::fake([
-            'cms.test/*' => Http::response([$this->fixture()], 200, [
-                'X-WP-Total' => $total,
-                'X-WP-TotalPages' => $totalPages,
-            ]),
-        ]);
+        return Post::create(array_merge([
+            'wp_id' => 1,
+            'slug' => 'hello-rateguard',
+            'title' => 'Hello & "RateGuard" — Guide',
+            'excerpt' => 'Short & sweet summary.',
+            'content_html' => '<p>Body</p>',
+            'author' => 'Jane Doe',
+            'featured_image_url' => null,
+            'categories' => [['id' => 5, 'slug' => 'logistics', 'name' => 'Logistics & Ops']],
+            'seo' => null,
+            'status' => 'publish',
+            'published_at' => now()->subDay(),
+            'modified_at' => now()->subDay(),
+        ], $overrides));
     }
 
     public function test_posts_are_public_and_return_the_contract_with_pagination_meta(): void
     {
-        $this->fakePosts(total: '25', totalPages: '3');
+        foreach (range(1, 3) as $n) {
+            $this->createPost([
+                'wp_id' => $n,
+                'slug' => "post-{$n}",
+                'published_at' => now()->subDays($n),
+            ]);
+        }
 
-        $response = $this->getJson('/api/v1/content/posts?page=2&per_page=10');
+        $response = $this->getJson('/api/v1/content/posts?page=2&per_page=2');
 
         $response->assertOk()
-            ->assertJsonPath('data.0.slug', 'hello-rateguard')
+            ->assertJsonPath('data.0.slug', 'post-3')
             ->assertJsonPath('data.0.title', 'Hello & "RateGuard" — Guide')
             ->assertJsonPath('data.0.featured_image_url', null)
-            ->assertJsonPath('meta.total', 25)
-            ->assertJsonPath('meta.total_pages', 3)
+            ->assertJsonPath('meta.total', 3)
+            ->assertJsonPath('meta.total_pages', 2)
             ->assertJsonPath('meta.page', 2)
-            ->assertJsonPath('meta.per_page', 10);
+            ->assertJsonPath('meta.per_page', 2);
 
         // Cache-Control is normalised and reordered by Symfony's ResponseHeaderBag
         // (it emits "max-age=60, public"), so assert on the directives, not order.
@@ -70,16 +103,33 @@ class ContentEndpointsTest extends TestCase
 
     public function test_a_single_post_is_returned_by_slug(): void
     {
-        $this->fakePosts();
+        $this->createPost();
 
         $this->getJson('/api/v1/content/posts/hello-rateguard')
             ->assertOk()
-            ->assertJsonPath('data.slug', 'hello-rateguard');
+            ->assertJsonPath('data.slug', 'hello-rateguard')
+            ->assertJsonPath('data.title', 'Hello & "RateGuard" — Guide');
+    }
+
+    public function test_a_non_latin_slug_is_resolved(): void
+    {
+        // WordPress stores a non-Latin slug percent-encoded (lower-case hex);
+        // the browser asks for it percent-encoded and the router decodes it
+        // before handing the controller the value.
+        $this->createPost([
+            'wp_id' => 2,
+            'slug' => '%d9%85%d8%b1%d8%ad%d8%a8%d8%a7',
+        ]);
+
+        $this->getJson('/api/v1/content/posts/'.rawurlencode('مرحبا'))
+            ->assertOk()
+            ->assertJsonPath('data.slug', '%d9%85%d8%b1%d8%ad%d8%a8%d8%a7')
+            ->assertJsonPath('data.title', 'Hello & "RateGuard" — Guide');
     }
 
     public function test_an_unknown_slug_returns_404_not_500(): void
     {
-        Http::fake(['cms.test/*' => Http::response([], 200)]);
+        $this->createPost();
 
         $this->getJson('/api/v1/content/posts/does-not-exist')
             ->assertNotFound();
@@ -102,7 +152,7 @@ class ContentEndpointsTest extends TestCase
     {
         Http::fake(['cms.test/*' => Http::response(['code' => 'service_unavailable'], 503)]);
 
-        $this->getJson('/api/v1/content/posts')
+        $this->getJson('/api/v1/content/pages/about')
             ->assertStatus(503);
     }
 
@@ -119,27 +169,27 @@ class ContentEndpointsTest extends TestCase
                 return Http::response(['code' => 'service_unavailable'], 503);
             }
 
-            return Http::response([$this->fixture()], 200, [
+            return Http::response([$this->pageFixture()], 200, [
                 'X-WP-Total' => '1',
                 'X-WP-TotalPages' => '1',
             ]);
         });
 
         // Prime a successful read, then take WordPress down.
-        $this->getJson('/api/v1/content/posts')->assertOk()->assertHeaderMissing('X-Content-Stale');
+        $this->getJson('/api/v1/content/pages/about-us')->assertOk()->assertHeaderMissing('X-Content-Stale');
 
         $down = true;
         $this->travel(3)->seconds();
 
-        $this->getJson('/api/v1/content/posts')
+        $this->getJson('/api/v1/content/pages/about-us')
             ->assertOk()
             ->assertHeader('X-Content-Stale', 'true')
-            ->assertJsonPath('data.0.slug', 'hello-rateguard');
+            ->assertJsonPath('data.slug', 'about-us');
     }
 
     public function test_the_response_never_leaks_credentials_or_raw_wordpress_fields(): void
     {
-        $this->fakePosts();
+        $this->createPost();
 
         $body = $this->getJson('/api/v1/content/posts')->assertOk()->getContent();
 

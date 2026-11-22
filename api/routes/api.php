@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\BillingController;
 use App\Http\Controllers\Api\V1\CarrierController;
 use App\Http\Controllers\Api\V1\ContentController;
 use App\Http\Controllers\Api\V1\InvoiceController;
@@ -80,6 +81,17 @@ Route::prefix('v1')->group(function () {
             Route::get('/invoices/{invoice}', [InvoiceController::class, 'show']);
             Route::get('/invoices/{invoice}/findings', [InvoiceController::class, 'findings']);
             Route::post('/invoices/{invoice}/audit', [InvoiceController::class, 'audit']);
+
+            // Billing: tenant-scoped like the other organization routes. Reading
+            // the overview is open to any member; every mutation is owner-only
+            // (enforced by SubscriptionPolicy).
+            Route::get('/billing', [BillingController::class, 'index']);
+            // Read-only plan catalogue; available to any member like the overview.
+            Route::get('/billing/plans', [BillingController::class, 'catalogue']);
+            Route::post('/billing/checkout', [BillingController::class, 'checkout']);
+            Route::post('/billing/portal', [BillingController::class, 'portal']);
+            Route::post('/billing/cancel', [BillingController::class, 'cancel']);
+            Route::post('/billing/resume', [BillingController::class, 'resume']);
         });
     });
 

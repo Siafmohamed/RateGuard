@@ -185,6 +185,26 @@ function extractRetryAfter(error: AxiosError): number | null {
   return Number.isFinite(seconds) ? seconds : null
 }
 
+/**
+ * Unwrap the machine-readable fields of an error body.
+ *
+ * Some endpoints nest them under `error` (the 402 plan-limit body is
+ * `{ error: { code, message, ... } }`), while Laravel's default handler and the
+ * validation error bag send them flat. Normalising here means every consumer
+ * (ApiError, the 402 callback, the upgrade dialog) sees one shape.
+ */
+function errorPayload(
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const nested = data?.error
+
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    return nested as Record<string, unknown>
+  }
+
+  return data
+}
+
 function extractMessage(
   status: number,
   data: Record<string, unknown> | undefined,
@@ -204,10 +224,12 @@ function toApiError(
   error: AxiosError,
   data: Record<string, unknown> | undefined,
 ): ApiError {
+  const payload = errorPayload(data)
+
   return new ApiError({
     status,
-    code: typeof data?.code === 'string' ? data.code : null,
-    message: extractMessage(status, data, error),
+    code: typeof payload?.code === 'string' ? payload.code : null,
+    message: extractMessage(status, payload, error),
     fieldErrors: extractFieldErrors(data),
     retryAfter: extractRetryAfter(error),
     requestId: (error.response?.headers?.['x-request-id'] as string | undefined) ?? null,
@@ -242,7 +264,7 @@ async function onResponseError(error: unknown): Promise<never> {
   }
 
   if (status === 402 && apiError.code === 'plan_limit_reached') {
-    callbacks?.onPlanLimit(data)
+    callbacks?.onPlanLimit(errorPayload(data))
   }
 
   if (status === 403 && isOrganizationForbidden(apiError.message)) {

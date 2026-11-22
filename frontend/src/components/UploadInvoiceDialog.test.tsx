@@ -4,7 +4,10 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 
 import { UploadInvoiceDialog } from '@/components/UploadInvoiceDialog'
-import { MAX_UPLOAD_BYTES } from '@/lib/api/invoices'
+import {
+  INVALID_INVOICE_CSV_HEADER_MESSAGE,
+  MAX_UPLOAD_BYTES,
+} from '@/lib/api/invoices'
 import { renderWithProviders } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -53,14 +56,46 @@ describe('UploadInvoiceDialog', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('That file is larger than 5 MB.')
   })
 
-  it('accepts a small csv file', async () => {
+  it('rejects a CSV without the invoice header', async () => {
     const user = userEvent.setup()
 
     renderDialog()
 
     await user.upload(
       getFileInput(),
-      new File(['carrier,total\nUPS,100'], 'rates.csv', { type: 'text/csv' }),
+      new File(
+        ['index,ean,stock,price\n1,2010743556564,669,135'],
+        'inventory.csv',
+        { type: 'text/csv' },
+      ),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      INVALID_INVOICE_CSV_HEADER_MESSAGE,
+    )
+  })
+
+  it('accepts a small CSV with the required invoice header', async () => {
+    const user = userEvent.setup()
+
+    renderDialog()
+
+    expect(
+      screen.getByText(
+        'Required columns: tracking_number, charge_type, description, billed_weight_kg, amount',
+      ),
+    ).toBeInTheDocument()
+
+    await user.upload(
+      getFileInput(),
+      new File(
+        [
+          'tracking_number,charge_type,description,billed_weight_kg,amount\n' +
+            '1ZTEST0001,fuel,Fuel surcharge,,1.86',
+        ],
+        'invoice.csv',
+        { type: 'text/csv' },
+      ),
     )
 
     expect(document.querySelector('[role="alert"]')).toBeNull()

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Domain\Audit\Resources\AuditFindingResource;
+use App\Domain\Billing\PlanQuota;
+use App\Domain\Contracts\Models\Contract;
 use App\Domain\Invoices\Jobs\InvoicePipeline;
 use App\Domain\Invoices\Models\Invoice;
 use App\Domain\Invoices\Resources\InvoiceResource;
@@ -11,7 +13,9 @@ use App\Enums\InvoiceStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreInvoiceRequest;
 use App\Models\Carrier;
+use App\Models\Organization;
 use App\Support\Tenancy\CurrentOrganization;
+use Illuminate\Support\Facades\DB;
 
 class InvoiceController extends Controller
 {
@@ -37,6 +41,10 @@ class InvoiceController extends Controller
     /**
      * Upload a carrier invoice, store it via InvoiceStorage and start the
      * parse -> normalize -> audit -> draft-claims pipeline.
+     *
+     * The plan's invoice quota is enforced BEFORE the file is stored or any job
+     * is dispatched: a blocked upload leaves no file, no invoice row and no
+     * queued work behind.
      */
     public function upload(StoreInvoiceRequest $request, InvoiceStorage $storage)
     {
@@ -48,23 +56,61 @@ class InvoiceController extends Controller
 
         $carrier = Carrier::query()->where('code', $validated['carrier'])->firstOrFail();
 
-        $path = $storage->store($request->file('file'), $organization);
+        // Link the organization's contract for this carrier so the audit has a
+        // rate card to compare the invoice against.
+        $contract = $this->matchingContract($carrier, $validated['invoice_date']);
 
-        $invoice = Invoice::create([
-            'carrier_id' => $carrier->getKey(),
-            'invoice_number' => $validated['invoice_number'],
-            'invoice_date' => $validated['invoice_date'],
-            'currency' => 'USD',
-            'total_cents' => 0,
-            'status' => InvoiceStatus::Uploaded->value,
-            'source_file' => $path,
-        ]);
+        // Count-then-create inside one transaction, serialized per organization
+        // by a row lock, so two simultaneous uploads can never both take the
+        // last slot of the plan.
+        $invoice = DB::transaction(function () use ($organization, $carrier, $contract, $request, $validated, $storage) {
+            Organization::query()->whereKey($organization->getKey())->lockForUpdate()->first();
 
+            app(PlanQuota::class)->assertCanUpload($organization);
+
+            $path = $storage->store($request->file('file'), $organization);
+
+            return Invoice::create([
+                'carrier_id' => $carrier->getKey(),
+                'contract_id' => $contract?->getKey(),
+                'invoice_number' => $validated['invoice_number'],
+                'invoice_date' => $validated['invoice_date'],
+                'currency' => 'USD',
+                'total_cents' => 0,
+                'status' => InvoiceStatus::Uploaded->value,
+                'source_file' => $path,
+            ]);
+        });
+
+        // Dispatched only after the transaction commits, so a rollback can never
+        // leave a job running against a row that was never written.
         InvoicePipeline::dispatch($invoice);
 
         return (new InvoiceResource($invoice->load('carrier')))
             ->response()
             ->setStatusCode(202);
+    }
+
+    /**
+     * The contract that governs an invoice: the organization's contract for the
+     * carrier whose effective window covers the invoice date, falling back to
+     * the most recent one for that carrier. The query is tenancy-scoped, so it
+     * can only ever return a contract of the current organization.
+     */
+    private function matchingContract(Carrier $carrier, string $invoiceDate): ?Contract
+    {
+        return Contract::query()
+            ->where('carrier_id', $carrier->getKey())
+            ->where('effective_from', '<=', $invoiceDate)
+            ->where(fn ($query) => $query
+                ->whereNull('effective_to')
+                ->orWhere('effective_to', '>=', $invoiceDate))
+            ->orderByDesc('effective_from')
+            ->first()
+            ?? Contract::query()
+                ->where('carrier_id', $carrier->getKey())
+                ->orderByDesc('effective_from')
+                ->first();
     }
 
     /**

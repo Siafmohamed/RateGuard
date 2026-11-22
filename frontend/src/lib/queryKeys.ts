@@ -11,6 +11,7 @@ export const queryKeys = {
   invoice: (id: number) => ['invoice', id] as const,
   findings: (id: number, page: number) => ['invoice', id, 'findings', page] as const,
   billing: ['billing'] as const,
+  billingPlans: ['billing', 'plans'] as const,
   posts: (page: number, category?: string) => ['content', 'posts', page, category ?? null] as const,
   post: (slug: string) => ['content', 'post', slug] as const,
   page: (slug: string) => ['content', 'page', slug] as const,

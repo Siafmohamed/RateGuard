@@ -46,8 +46,8 @@ describe('BillingPage', () => {
     expect(screen.queryByRole('button', { name: 'Cancel subscription' })).not.toBeInTheDocument()
     expect(screen.getByText(/Only an owner can change the subscription/)).toBeInTheDocument()
 
-    // The upgrade affordance stays visible but is disabled for a non-owner.
-    const upgrade = screen.getByRole('button', { name: 'Upgrade' })
+    // The upgrade affordance stays visible but is inert for a non-owner.
+    const upgrade = screen.getByRole('button', { name: 'Payments coming soon' })
 
     expect(upgrade).toBeDisabled()
   })
@@ -59,7 +59,36 @@ describe('BillingPage', () => {
       await screen.findByRole('button', { name: 'Manage payment method' }),
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Cancel subscription' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Upgrade' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Payments coming soon' })).toBeDisabled()
+  })
+
+  it('advertises that payments are unavailable and never calls checkout', async () => {
+    let checkoutCalls = 0
+
+    // If the UI ever fired the checkout request, this handler would record it.
+    server.use(
+      http.post('/api/v1/billing/checkout', () => {
+        checkoutCalls += 1
+
+        return HttpResponse.json(
+          {
+            error: {
+              code: 'payments_not_available',
+              message: 'Online payments are not available yet.',
+            },
+          },
+          { status: 501 },
+        )
+      }),
+    )
+
+    arrange('owner')
+
+    const upgrade = await screen.findByRole('button', { name: 'Payments coming soon' })
+
+    expect(upgrade).toBeDisabled()
+    // Nothing was requested, so there is no 501 in the console to explain.
+    expect(checkoutCalls).toBe(0)
   })
 
   it('renders the usage bar from the integer counts', async () => {

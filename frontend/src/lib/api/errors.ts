@@ -63,6 +63,7 @@ const FRIENDLY_MESSAGES: Record<number, string> = {
   422: 'Please correct the highlighted fields.',
   429: 'Too many requests. Please slow down.',
   500: 'Something went wrong on our end.',
+  501: 'Online payments are not available yet.',
   502: 'The server is temporarily unavailable.',
   503: 'The service is temporarily unavailable.',
   504: 'The server took too long to respond.',

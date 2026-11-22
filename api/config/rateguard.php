@@ -108,4 +108,80 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Billing plans
+    |--------------------------------------------------------------------------
+    |
+    | The catalogue of plans the Billing API advertises. It is the SINGLE place
+    | plan definitions live: the API serves them, the organization quota reads
+    | them, and no code hardcodes a price or a limit.
+    |
+    | The values below are PLACEHOLDERS, not final pricing. They are deliberately
+    | kept in configuration so the product owner can change prices or limits
+    | without a code change or a deploy of application logic.
+    |
+    |  - price_cents: an integer number of cents (never a float), matching the
+    |    rest of the money handling.
+    |  - invoice_limit: the number of invoices allowed per billing period; null
+    |    means unlimited (enterprise).
+    |  - features: free-form boolean flags for the UI.
+    |
+    | Producing a checkout or customer-portal URL requires a payment provider,
+    | which is NOT integrated: /billing/checkout and /billing/portal return
+    | 501 until one is wired up.
+    |
+    */
+
+    'billing' => [
+
+        // Every organization without a subscription is treated as being on this
+        // plan (see Organization::currentPlan()).
+        'default_plan' => 'free',
+
+        'plans' => [
+
+            [
+                'code' => 'free',
+                'name' => 'Free',
+                'price_cents' => 0,
+                'invoice_limit' => 10,
+                'features' => [
+                    'audit' => true,
+                    'csv_export' => false,
+                    'api_access' => false,
+                    'priority_support' => false,
+                ],
+            ],
+
+            [
+                'code' => 'pro',
+                'name' => 'Pro',
+                'price_cents' => 9900,
+                'invoice_limit' => 200,
+                'features' => [
+                    'audit' => true,
+                    'csv_export' => true,
+                    'api_access' => false,
+                    'priority_support' => false,
+                ],
+            ],
+
+            [
+                'code' => 'enterprise',
+                'name' => 'Enterprise',
+                'price_cents' => 49900,
+                'invoice_limit' => null,
+                'features' => [
+                    'audit' => true,
+                    'csv_export' => true,
+                    'api_access' => true,
+                    'priority_support' => true,
+                ],
+            ],
+
+        ],
+
+    ],
+
 ];

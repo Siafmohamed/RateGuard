@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { useRef, useState, type ChangeEvent } from 'react'
 
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import {
   ACCEPTED_UPLOAD_TYPES,
   uploadInvoice,
   uploadInvoiceInputSchema,
+  validateInvoiceCsvHeader,
   validateInvoiceFile,
   type UploadInvoiceInput,
 } from '@/lib/api/invoices'
@@ -38,7 +39,9 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
 
   const [file, setFile] = useState<File | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  const [checkingHeader, setCheckingHeader] = useState(false)
   const [progress, setProgress] = useState(0)
+  const fileValidationRun = useRef(0)
 
   const {
     register,
@@ -72,6 +75,14 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
         return
       }
 
+      const fileMessage = error.fieldErrors.file?.[0]
+
+      if (fileMessage) {
+        setFileError(fileMessage)
+
+        return
+      }
+
       // 413: the server rejected the size outright.
       if (error.status === 413) {
         setFileError('That file is larger than 5 MB.')
@@ -94,21 +105,44 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
   })
 
   function handleClose() {
+    fileValidationRun.current += 1
     reset(EMPTY_VALUES)
     setFile(null)
     setFileError(null)
+    setCheckingHeader(false)
     setProgress(0)
     onClose()
   }
 
-  function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+  async function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const validationRun = ++fileValidationRun.current
     const selected = event.target.files?.[0] ?? null
+    const fileIssue = selected ? validateInvoiceFile(selected) : null
 
     setFile(selected)
-    setFileError(selected ? validateInvoiceFile(selected) : null)
+    setFileError(fileIssue)
+    setCheckingHeader(false)
+
+    if (!selected || fileIssue) {
+      return
+    }
+
+    setCheckingHeader(true)
+    const headerIssue = await validateInvoiceCsvHeader(selected)
+
+    if (validationRun !== fileValidationRun.current) {
+      return
+    }
+
+    setFileError(headerIssue)
+    setCheckingHeader(false)
   }
 
   const onSubmit = handleSubmit((values) => {
+    if (checkingHeader) {
+      return
+    }
+
     if (!file) {
       setFileError('Choose a file to upload.')
 
@@ -207,6 +241,9 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
             <label htmlFor="file" className="block text-sm font-medium text-slate-700">
               Invoice file (csv or txt, max 5 MB)
             </label>
+            <p className="mt-1 text-xs text-slate-500">
+              Required columns: tracking_number, charge_type, description, billed_weight_kg, amount
+            </p>
             <input
               id="file"
               type="file"
@@ -217,6 +254,11 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
             {fileError ? (
               <p role="alert" className="mt-1 text-xs text-red-600">
                 {fileError}
+              </p>
+            ) : null}
+            {checkingHeader ? (
+              <p role="status" className="mt-1 text-xs text-slate-500">
+                Checking invoice CSV columns…
               </p>
             ) : null}
           </div>
@@ -241,7 +283,7 @@ export function UploadInvoiceDialog({ open, onClose }: UploadInvoiceDialogProps)
             <Button variant="secondary" onClick={handleClose} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" loading={busy}>
+            <Button type="submit" loading={busy || checkingHeader} disabled={checkingHeader}>
               Upload
             </Button>
           </div>

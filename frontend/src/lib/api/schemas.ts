@@ -195,9 +195,9 @@ export const contentPageEnvelopeSchema = z.object({ data: contentPageSchema })
 /* ------------------------------------------------------------------ billing */
 
 /*
- * NOTE: there is no billing backend yet (api/app/Domain/Billing is empty).
- * These schemas document the contract the UI is built against; the API
- * functions that use them will start working once the backend exists.
+ * The plan catalogue is served from the API (config/rateguard.php ->
+ * billing.plans). `features` is additive and optional so older payloads
+ * without it keep parsing.
  */
 
 export const planSchema = z.object({
@@ -205,8 +205,13 @@ export const planSchema = z.object({
   name: z.string(),
   price_cents: z.number(),
   invoice_limit: z.number().nullable(),
+  features: z.record(z.string(), z.boolean()).optional(),
 })
 export type Plan = z.infer<typeof planSchema>
+
+/** The read-only catalogue returned by GET /billing/plans. */
+export const planListSchema = z.object({ plans: z.array(planSchema) })
+export type PlanList = z.infer<typeof planListSchema>
 
 export const billingOverviewSchema = z.object({
   plan: planSchema.nullable(),

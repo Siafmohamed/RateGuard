@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Domain\Billing\Models\Subscription;
 use App\Enums\Role;
 use App\Http\Controllers\Controller;
 use App\Models\Organization;
@@ -38,6 +39,14 @@ class AuthController extends Controller
 
             $user->organizations()->attach($organization->id, [
                 'role' => Role::Owner->value,
+            ]);
+
+            // Every new organization starts on the default (free) plan so no
+            // downstream code has to handle a subscription-less organization.
+            Subscription::create([
+                'organization_id' => $organization->id,
+                'plan_code' => config('rateguard.billing.default_plan', 'free'),
+                'status' => Subscription::STATUS_ACTIVE,
             ]);
 
             return $user;

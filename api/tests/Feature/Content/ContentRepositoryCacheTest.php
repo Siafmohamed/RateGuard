@@ -11,6 +11,10 @@ use Tests\TestCase;
  * The repository is the resilience layer: it caches successful reads, serves a
  * long-lived "stale" copy when WordPress is down, and trips a circuit breaker
  * so a sustained outage never turns into a stampede of failing requests.
+ *
+ * Posts bypass this layer entirely - they are imported into the local `posts`
+ * table and served by PostRepository - so these tests exercise it through
+ * pages, which still go out to WordPress.
  */
 class ContentRepositoryCacheTest extends TestCase
 {
@@ -31,13 +35,21 @@ class ContentRepositoryCacheTest extends TestCase
     }
 
     /**
+     * A WordPress page payload (posts are no longer fetched over HTTP).
+     *
      * @return array<string, mixed>
      */
-    private function fixture(): array
+    private function pageFixture(): array
     {
-        $path = base_path('tests/Fixtures/wp-post.json');
-
-        return json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        return [
+            'id' => 7,
+            'slug' => 'about-us',
+            'title' => ['rendered' => 'About Us'],
+            'excerpt' => ['rendered' => 'About the team.'],
+            'content' => ['rendered' => '<p>Hello</p>'],
+            'date_gmt' => '2026-01-01T00:00:00',
+            'modified_gmt' => '2026-01-01T00:00:00',
+        ];
     }
 
     private function repository(): ContentRepository
@@ -45,10 +57,10 @@ class ContentRepositoryCacheTest extends TestCase
         return app(ContentRepository::class);
     }
 
-    private function fakePosts(): void
+    private function fakePages(): void
     {
         Http::fake([
-            'cms.test/*' => Http::response([$this->fixture()], 200, [
+            'cms.test/*' => Http::response([$this->pageFixture()], 200, [
                 'X-WP-Total' => '1',
                 'X-WP-TotalPages' => '1',
             ]),
@@ -57,15 +69,15 @@ class ContentRepositoryCacheTest extends TestCase
 
     public function test_a_second_request_is_served_from_cache_without_hitting_wordpress(): void
     {
-        $this->fakePosts();
+        $this->fakePages();
 
         $repository = $this->repository();
 
-        $first = $repository->posts(1, 10);
-        $second = $repository->posts(1, 10);
+        $first = $repository->pages(1, 10);
+        $second = $repository->pages(1, 10);
 
-        $this->assertSame('hello-rateguard', $first->items[0]->slug);
-        $this->assertSame('hello-rateguard', $second->items[0]->slug);
+        $this->assertSame('about-us', $first->items[0]->slug);
+        $this->assertSame('about-us', $second->items[0]->slug);
 
         // The second read never reached WordPress.
         Http::assertSentCount(1);
@@ -86,23 +98,23 @@ class ContentRepositoryCacheTest extends TestCase
                 return Http::response(['code' => 'service_unavailable'], 503);
             }
 
-            return Http::response([$this->fixture()], 200, [
+            return Http::response([$this->pageFixture()], 200, [
                 'X-WP-Total' => '1',
                 'X-WP-TotalPages' => '1',
             ]);
         });
 
         // Prime the cache with a successful read.
-        $repository->posts(1, 10);
+        $repository->pages(1, 10);
         $this->assertFalse($repository->isStale());
 
         // WordPress goes down and the fresh window lapses.
         $down = true;
         $this->travel(3)->seconds();
 
-        $result = $repository->posts(1, 10);
+        $result = $repository->pages(1, 10);
 
-        $this->assertSame('hello-rateguard', $result->items[0]->slug);
+        $this->assertSame('about-us', $result->items[0]->slug);
         $this->assertTrue($repository->isStale());
 
         // 1 successful prime + 2 retry attempts against the failing service.
@@ -117,7 +129,7 @@ class ContentRepositoryCacheTest extends TestCase
 
         $this->expectException(ContentUnavailableException::class);
 
-        $this->repository()->posts(1, 10);
+        $this->repository()->pages(1, 10);
     }
 
     public function test_the_circuit_breaker_opens_after_five_consecutive_failures(): void
@@ -128,7 +140,7 @@ class ContentRepositoryCacheTest extends TestCase
 
         for ($attempt = 0; $attempt < 5; $attempt++) {
             try {
-                $repository->posts(1, 10);
+                $repository->pages(1, 10);
                 $this->fail('Expected ContentUnavailableException.');
             } catch (ContentUnavailableException) {
                 // expected
@@ -137,7 +149,7 @@ class ContentRepositoryCacheTest extends TestCase
 
         // Five failures have now opened the circuit.
         try {
-            $repository->posts(1, 10);
+            $repository->pages(1, 10);
             $this->fail('Expected ContentUnavailableException.');
         } catch (ContentUnavailableException) {
             // expected

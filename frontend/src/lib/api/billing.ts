@@ -1,18 +1,30 @@
 import { api } from './client'
-import { billingOverviewSchema, checkoutSchema, type BillingOverview } from './schemas'
+import {
+  billingOverviewSchema,
+  checkoutSchema,
+  planListSchema,
+  type BillingOverview,
+  type PlanList,
+} from './schemas'
 import { parseResponse } from './validate'
 
 /*
- * NOTE: the billing backend does not exist yet (api/app/Domain/Billing only
- * holds a .gitkeep). These functions implement the documented contract so the UI
- * is complete and wired; they will start returning real data once the endpoints
- * are built. Until then, /app/billing renders its error/empty state.
+ * The billing endpoints. The plan catalogue and the quota come from the API;
+ * the payment-provider endpoints (checkout, portal) report 501 until a provider
+ * is integrated, so the UI must treat them as "coming soon" rather than broken.
  */
 
 export async function fetchBilling(signal?: AbortSignal): Promise<BillingOverview> {
   const { data } = await api.get('/billing', { signal })
 
   return parseResponse(billingOverviewSchema, data, 'GET /billing')
+}
+
+/** The read-only plan catalogue (any member may read it). */
+export async function fetchPlans(signal?: AbortSignal): Promise<PlanList> {
+  const { data } = await api.get('/billing/plans', { signal })
+
+  return parseResponse(planListSchema, data, 'GET /billing/plans')
 }
 
 /** Returns the hosted checkout URL to redirect the browser to. */

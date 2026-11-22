@@ -7,6 +7,7 @@ use App\Domain\Audit\Rules\DimensionalWeightRule;
 use App\Domain\Audit\Rules\DuplicateChargeRule;
 use App\Domain\Audit\Rules\RuleRegistry;
 use App\Domain\Audit\Rules\UnauthorizedSurchargeRule;
+use App\Domain\Billing\Models\Subscription;
 use App\Domain\Claims\Models\Claim;
 use App\Domain\Content\Clients\WordPressContentClient;
 use App\Domain\Content\Contracts\ContentClientInterface;
@@ -18,6 +19,7 @@ use App\Policies\ClaimPolicy;
 use App\Policies\ContractPolicy;
 use App\Policies\InvoicePolicy;
 use App\Policies\ShipmentPolicy;
+use App\Policies\SubscriptionPolicy;
 use App\Support\Tenancy\CurrentOrganization;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
@@ -65,5 +67,6 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(Invoice::class, InvoicePolicy::class);
         Gate::policy(AuditFinding::class, AuditFindingPolicy::class);
         Gate::policy(Claim::class, ClaimPolicy::class);
+        Gate::policy(Subscription::class, SubscriptionPolicy::class);
     }
 }

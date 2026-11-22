@@ -3,6 +3,8 @@ import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/AppLayout'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
 import { RootLayout } from '@/components/RootLayout'
+import { ArticlePage } from '@/features/articles/ArticlePage'
+import { ArticlesPage } from '@/features/articles/ArticlesPage'
 import { BillingPage } from '@/pages/BillingPage'
 import { BlogListPage } from '@/pages/BlogListPage'
 import { BlogPostPage } from '@/pages/BlogPostPage'
@@ -29,6 +31,12 @@ export const router = createBrowserRouter([
       { path: 'blog', element: <BlogListPage /> },
       { path: 'blog/:slug', element: <BlogPostPage /> },
       { path: 'docs/:slug', element: <DocPage /> },
+
+      // Public articles, read straight from WordPress (see features/articles).
+      // Addressed by id because the WordPress slugs here are Arabic and
+      // percent-encoded.
+      { path: 'articles', element: <ArticlesPage /> },
+      { path: 'articles/:id', element: <ArticlePage /> },
 
       {
         path: 'app',

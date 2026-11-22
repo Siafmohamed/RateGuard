@@ -84,6 +84,37 @@ return [
             ]) : [],
         ],
 
+        /*
+        |--------------------------------------------------------------------------
+        | WordPress (headless CMS)
+        |--------------------------------------------------------------------------
+        |
+        | Read-only source for the post import (App\Console\Commands\
+        | SyncPostsCommand). WordPress is never queried at request time: posts are
+        | imported into the local `posts` table and served from there.
+        |
+        | The host is a Compose service name (like the content gateway's base
+        | URL), because only the "php" container joins the WordPress network.
+        |
+        */
+
+        'wordpress' => [
+            'driver' => 'mysql',
+            'host' => env('WP_DB_HOST', 'wordpress_db'),
+            'port' => env('WP_DB_PORT', '3306'),
+            'database' => env('WP_DB_NAME', 'wordpress'),
+            'username' => env('WP_DB_USER', 'wordpress'),
+            'password' => env('WP_DB_PASSWORD', 'secret'),
+            'charset' => env('DB_CHARSET', 'utf8mb4'),
+            'collation' => env('DB_COLLATION', 'utf8mb4_unicode_ci'),
+            // WordPress prefixes every core table; the import queries them by
+            // their unprefixed name (table('posts') -> wp_posts).
+            'prefix' => env('WP_DB_PREFIX', 'wp_'),
+            'prefix_indexes' => true,
+            'strict' => true,
+            'engine' => null,
+        ],
+
         'pgsql' => [
             'driver' => 'pgsql',
             'url' => env('DB_URL'),

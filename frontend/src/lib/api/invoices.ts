@@ -22,6 +22,16 @@ export type UploadInvoiceInput = z.infer<typeof uploadInvoiceInputSchema>
 export const ACCEPTED_UPLOAD_TYPES = '.csv,.txt'
 /** Mirror of the server rule: `max:5120` kilobytes. */
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+export const REQUIRED_INVOICE_CSV_HEADER = [
+  'tracking_number',
+  'charge_type',
+  'description',
+  'billed_weight_kg',
+  'amount',
+] as const
+
+export const INVALID_INVOICE_CSV_HEADER_MESSAGE =
+  `The invoice CSV must have this header row: ${REQUIRED_INVOICE_CSV_HEADER.join(',')}.`
 
 const ACCEPTED_MIME_TYPES = new Set([
   'text/csv',
@@ -53,6 +63,48 @@ export function validateInvoiceFile(file: File): string | null {
   return null
 }
 
+/**
+ * Check the CSV schema before sending the file to the server.
+ */
+export async function validateInvoiceCsvHeader(file: File): Promise<string | null> {
+  let firstNonBlankLine: string | undefined
+
+  try {
+    firstNonBlankLine = (await file.text())
+      .split(/\r\n|\n|\r/)
+      .find((line) => line.trim() !== '')
+  } catch {
+    return 'The invoice file could not be read. Please choose another file.'
+  }
+
+  if (!firstNonBlankLine) {
+    return INVALID_INVOICE_CSV_HEADER_MESSAGE
+  }
+
+  const header = firstNonBlankLine
+    .replace(/^\uFEFF/, '')
+    .split(',')
+    .map((column) => column.trim().replace(/^"(.*)"$/, '$1').toLowerCase())
+
+  return header.join(',') === REQUIRED_INVOICE_CSV_HEADER.join(',')
+    ? null
+    : INVALID_INVOICE_CSV_HEADER_MESSAGE
+}
+
+/**
+ * Laravel's `JsonResource` wraps a single resource in a `data` envelope
+ * (`{ "data": { ... } }`), while a paginated collection already carries the
+ * `data` + `meta` shape the page schemas describe. Every single-resource
+ * endpoint therefore has to unwrap that envelope before parsing.
+ */
+function unwrapResource(data: unknown): unknown {
+  if (data !== null && typeof data === 'object' && 'data' in data) {
+    return (data as { data: unknown }).data
+  }
+
+  return data
+}
+
 export async function listInvoices(page = 1, signal?: AbortSignal): Promise<InvoicePage> {
   const { data } = await api.get('/invoices', { params: { page }, signal })
 
@@ -62,7 +114,7 @@ export async function listInvoices(page = 1, signal?: AbortSignal): Promise<Invo
 export async function getInvoice(id: number, signal?: AbortSignal): Promise<Invoice> {
   const { data } = await api.get(`/invoices/${id}`, { signal })
 
-  return parseResponse(invoiceSchema, data, 'GET /invoices/{invoice}')
+  return parseResponse(invoiceSchema, unwrapResource(data), 'GET /invoices/{invoice}')
 }
 
 export async function listFindings(
@@ -79,7 +131,7 @@ export async function listFindings(
 export async function auditInvoice(id: number): Promise<Invoice> {
   const { data } = await api.post(`/invoices/${id}/audit`)
 
-  return parseResponse(invoiceSchema, data, 'POST /invoices/{invoice}/audit')
+  return parseResponse(invoiceSchema, unwrapResource(data), 'POST /invoices/{invoice}/audit')
 }
 
 /**
@@ -108,5 +160,5 @@ export async function uploadInvoice(
     },
   })
 
-  return parseResponse(invoiceSchema, data, 'POST /invoices/upload')
+  return parseResponse(invoiceSchema, unwrapResource(data), 'POST /invoices/upload')
 }

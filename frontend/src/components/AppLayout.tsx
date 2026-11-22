@@ -12,6 +12,7 @@ import { useActiveOrganizationId, useActiveOrganizationStore } from '@/stores/ac
 const NAV_LINKS = [
   { to: '/app/invoices', label: 'Invoices' },
   { to: '/app/billing', label: 'Billing' },
+  { to: '/articles', label: 'Articles' },
 ]
 
 /**

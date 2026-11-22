@@ -3,6 +3,7 @@
 namespace App\Domain\Invoices\Jobs;
 
 use App\Domain\Invoices\Models\InvoiceLine;
+use App\Domain\Invoices\Support\InvoiceCsvHeader;
 use App\Domain\Invoices\Support\InvoiceStorage;
 use App\Enums\InvoiceStatus;
 use Illuminate\Support\Facades\DB;
@@ -20,14 +21,6 @@ use RuntimeException;
  */
 class ParseInvoiceJob extends InvoiceJob
 {
-    private const HEADER = [
-        'tracking_number',
-        'charge_type',
-        'description',
-        'billed_weight_kg',
-        'amount',
-    ];
-
     /**
      * Insert in chunks to keep the statement size sane on large invoices.
      */
@@ -116,12 +109,12 @@ class ParseInvoiceJob extends InvoiceJob
             $cells[0] = preg_replace('/^\xEF\xBB\xBF/', '', (string) $cells[0]);
         }
 
-        $normalised = array_map(fn ($cell) => strtolower(trim((string) $cell)), $cells);
+        $normalised = InvoiceCsvHeader::normalize($cells);
 
-        if ($normalised !== self::HEADER) {
+        if ($normalised !== InvoiceCsvHeader::COLUMNS) {
             throw new RuntimeException(sprintf(
                 'Malformed CSV row 1: expected header "%s".',
-                implode(',', self::HEADER),
+                InvoiceCsvHeader::expected(),
             ));
         }
 
@@ -134,11 +127,11 @@ class ParseInvoiceJob extends InvoiceJob
      */
     private function mapRow(array $cells, int $line): array
     {
-        if (count($cells) !== count(self::HEADER)) {
+        if (count($cells) !== count(InvoiceCsvHeader::COLUMNS)) {
             throw new RuntimeException(sprintf(
                 'Malformed CSV row %d: expected %d columns, got %d.',
                 $line,
-                count(self::HEADER),
+                count(InvoiceCsvHeader::COLUMNS),
                 count($cells),
             ));
         }

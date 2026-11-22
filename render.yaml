@@ -1,0 +1,115 @@
+#################################################################
+# RateGuard - free demo deployment on Render
+#
+# Free-tier reality check (https://render.com/docs/free):
+#   - one web service, 0.1 CPU / 512 MB, spins down after 15 min idle
+#   - NO shell access and NO one-off jobs, so migrations and config caching run
+#     from docker/render/entrypoint.sh on every boot
+#   - the filesystem is EPHEMERAL: uploaded invoice CSVs are lost on restart,
+#     redeploy or spin-down, while the database rows survive
+#   - background workers and cron are NOT available, which is why
+#     QUEUE_CONNECTION is "sync"
+#
+# The database is deliberately EXTERNAL and not declared here: Render's own free
+# Postgres expires 30 days after creation, so point it at a permanent
+# MySQL-compatible free tier instead (e.g. TiDB Cloud Starter) and keep
+# DB_CONNECTION=mysql, which means migrations are unchanged.
+#################################################################
+
+services:
+  - type: web
+    name: rateguard
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./docker/render/Dockerfile
+    dockerContext: .
+    # Laravel's built-in route. NOT /api/v1/health: that one pings Redis and the
+    # database and answers 503 when either is down, which would send Render into
+    # a restart loop whenever an idle database cold-starts.
+    healthCheckPath: /up
+    # Switch to "checksPass" in the Render dashboard to gate deploys on the
+    # GitHub Actions checks from .github/workflows/ci.yml.
+    autoDeployTrigger: commit
+
+    envVars:
+      # --- Laravel -----------------------------------------------------------
+      - key: APP_NAME
+        value: RateGuard
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      # Must carry the "base64:" prefix, so it cannot be auto-generated - paste
+      # the output of `php artisan key:generate --show`.
+      - key: APP_KEY
+        sync: false
+      # APP_URL is derived from RENDER_EXTERNAL_URL in the entrypoint, and is
+      # used to derive SESSION_DOMAIN and SANCTUM_STATEFUL_DOMAINS too.
+
+      # Render captures stdout/stderr; config/logging.php ships a stderr channel.
+      - key: LOG_CHANNEL
+        value: stderr
+      - key: LOG_LEVEL
+        value: warning
+
+      # --- Database (external, see the note at the top) -----------------------
+      - key: DB_CONNECTION
+        value: mysql
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_DATABASE
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+
+      # --- Cache and session -------------------------------------------------
+      - key: CACHE_STORE
+        value: redis
+      # Sessions go to the database rather than Redis: the free Key Value
+      # instance is in-memory only and loses everything when it restarts.
+      - key: SESSION_DRIVER
+        value: database
+      - key: SESSION_SECURE_COOKIE
+        value: "true"
+      # No background worker exists on the free plan, so the audit pipeline runs
+      # inside the upload request instead of on a queue.
+      - key: QUEUE_CONNECTION
+        value: sync
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: rateguard-cache
+          property: connectionString
+
+      # --- Storage -----------------------------------------------------------
+      # Ephemeral by design: the free plan has no persistent disk.
+      - key: FILESYSTEM_DISK
+        value: local
+      - key: INVOICE_DISK
+        value: local
+      # The built SPA is baked into the image at /var/www/spa.
+      - key: SPA_INDEX_PATH
+        value: /var/www/spa/index.html
+
+      # --- Content gateway ---------------------------------------------------
+      # WordPress is intentionally not deployed for this demo. Pointing the
+      # gateway at a closed loopback port makes it fail fast instead of burning
+      # seconds on DNS for the default "http://wordpress" host, so /blog and
+      # /docs return a clean 503 (ContentUnavailableException) rather than a 500.
+      - key: WP_BASE_URL
+        value: http://127.0.0.1:1
+      - key: WP_RETRIES
+        value: "0"
+      - key: WP_CONNECT_TIMEOUT
+        value: "1"
+
+  - type: keyvalue
+    name: rateguard-cache
+    plan: free
+    region: frankfurt

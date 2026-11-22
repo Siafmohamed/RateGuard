@@ -2,15 +2,20 @@
 
 namespace Tests\Feature\Seo;
 
+use App\Domain\Content\Models\Post;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * /sitemap.xml and /robots.txt, built from the cached content lists.
+ * /sitemap.xml and /robots.txt, built from the imported posts and the cached
+ * WordPress page list.
  */
 class SitemapRobotsTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -26,6 +31,27 @@ class SitemapRobotsTest extends TestCase
         config()->set('rateguard.spa.index_path', base_path('tests/missing-spa-index.html'));
 
         Http::preventStrayRequests();
+    }
+
+    /**
+     * A published post as the importer would have stored it.
+     */
+    private function createPost(): Post
+    {
+        return Post::create([
+            'wp_id' => 1234,
+            'slug' => 'hello-rateguard',
+            'title' => 'Hello RateGuard',
+            'excerpt' => 'Excerpt',
+            'content_html' => '<p>Body</p>',
+            'author' => 'Jane Doe',
+            'featured_image_url' => null,
+            'categories' => [],
+            'seo' => null,
+            'status' => 'publish',
+            'published_at' => '2026-10-01T12:00:00',
+            'modified_at' => '2026-10-02T08:30:00',
+        ]);
     }
 
     /**
@@ -47,28 +73,22 @@ class SitemapRobotsTest extends TestCase
     }
 
     /**
-     * Posts and pages are stubbed separately, keyed off the rest_route that
-     * WordPressContentClient always sends.
+     * WordPress *pages* are still fetched over HTTP; posts come from the local
+     * table.
      */
-    private function fakeLists(): void
+    private function fakePages(): void
     {
-        Http::fake(function (Request $request) {
-            $url = urldecode($request->url());
-
-            $item = str_contains($url, '/wp/v2/pages')
-                ? $this->wpItem(['slug' => 'getting-started', 'title' => ['rendered' => 'Getting started']])
-                : $this->wpItem();
-
-            return Http::response([$item], 200, [
-                'X-WP-Total' => '1',
-                'X-WP-TotalPages' => '1',
-            ]);
-        });
+        Http::fake(fn (Request $request) => Http::response(
+            [$this->wpItem(['slug' => 'getting-started', 'title' => ['rendered' => 'Getting started']])],
+            200,
+            ['X-WP-Total' => '1', 'X-WP-TotalPages' => '1'],
+        ));
     }
 
     public function test_the_sitemap_lists_posts_and_docs_as_valid_xml(): void
     {
-        $this->fakeLists();
+        $this->createPost();
+        $this->fakePages();
 
         $response = $this->get('/sitemap.xml')->assertOk();
 
@@ -85,13 +105,15 @@ class SitemapRobotsTest extends TestCase
 
     public function test_the_sitemap_is_cached_for_an_hour(): void
     {
-        $this->fakeLists();
+        $this->createPost();
+        $this->fakePages();
 
         $this->get('/sitemap.xml')->assertOk();
         $this->get('/sitemap.xml')->assertOk();
 
-        // Exactly one posts call and one pages call, on the first request only.
-        Http::assertSentCount(2);
+        // Posts come from the local table; only the one page list is fetched,
+        // on the first request only.
+        Http::assertSentCount(1);
     }
 
     public function test_the_sitemap_returns_503_when_wordpress_is_down(): void

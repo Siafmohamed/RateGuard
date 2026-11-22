@@ -49,6 +49,19 @@ class AuditInvoiceJob extends InvoiceJob
             ->map(fn (Shipment $shipment) => ShipmentData::fromModel($shipment))
             ->all();
 
+        // An invoice imported before contracts existed (or a re-audit) may have
+        // no contract linked yet: resolve it now so the rules have a rate card.
+        if ($invoice->contract_id === null) {
+            $matching = Contract::matchingFor(
+                (int) $invoice->carrier_id,
+                $invoice->invoice_date->toDateString(),
+            );
+
+            if ($matching !== null) {
+                $invoice->update(['contract_id' => $matching->getKey()]);
+            }
+        }
+
         $contract = $invoice->contract_id !== null
             ? Contract::query()->with('rates')->find($invoice->contract_id)
             : null;
@@ -67,6 +80,15 @@ class AuditInvoiceJob extends InvoiceJob
         $invoice->update([
             'status' => InvoiceStatus::Audited->value,
             'audited_at' => now(),
+            // Without a governing contract there is no rate card to compare
+            // against, so the rules stay silent. Say so explicitly instead of
+            // letting the UI report an unexplained "0 findings".
+            'error_message' => $contract === null
+                ? sprintf(
+                    'No contract is linked to this invoice, so overcharge rules could not run. Link a contract for carrier %s to enable contract-based auditing.',
+                    $carrierCode,
+                )
+                : null,
         ]);
     }
 }

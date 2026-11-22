@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { SkeletonRows } from '@/components/ui/Skeleton'
 import { useDocumentVisible } from '@/hooks/useDocumentVisible'
+import { fetchBilling } from '@/lib/api/billing'
 import { listInvoices } from '@/lib/api/invoices'
 import { hasInvoiceInFlight } from '@/lib/api/schemas'
 import { formatCents } from '@/lib/money'
@@ -42,6 +43,18 @@ export function InvoicesListPage() {
     },
   })
 
+  // The plan quota is only a hint for the UI: the backend enforces it before a
+  // file is stored or a job is queued, and remains the source of truth.
+  const quota = useQuery({
+    queryKey: queryKeys.billing,
+    queryFn: ({ signal }) => fetchBilling(signal),
+    retry: false,
+  })
+
+  const planLimit = quota.data?.plan?.invoice_limit ?? null
+  const invoicesUsed = quota.data?.invoices_used ?? 0
+  const atLimit = planLimit !== null && planLimit > 0 && invoicesUsed >= planLimit
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -51,8 +64,20 @@ export function InvoicesListPage() {
             Upload carrier invoices and track their audit progress.
           </p>
         </div>
-        <Button onClick={() => setUploadOpen(true)}>Upload invoice</Button>
+        <Button onClick={() => setUploadOpen(true)} disabled={atLimit}>
+          Upload invoice
+        </Button>
       </div>
+
+      {atLimit ? (
+        <p
+          role="status"
+          className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+        >
+          You have reached your plan limit ({invoicesUsed} / {planLimit} invoices this month).
+          Upgrade to upload more.
+        </p>
+      ) : null}
 
       {query.isPending ? <SkeletonRows rows={6} /> : null}
 
@@ -72,7 +97,11 @@ export function InvoicesListPage() {
         <EmptyState
           title="No invoices yet"
           description="Upload a CSV or TXT invoice from a carrier to start an audit."
-          action={<Button onClick={() => setUploadOpen(true)}>Upload invoice</Button>}
+          action={
+            <Button onClick={() => setUploadOpen(true)} disabled={atLimit}>
+              Upload invoice
+            </Button>
+          }
         />
       ) : null}
 

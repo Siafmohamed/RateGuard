@@ -144,8 +144,15 @@ export function InvoiceDetailPage() {
             ) : null}
           </div>
 
-          {invoice.status === 'failed' && invoice.error_message ? (
-            <p role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">
+          {invoice.error_message ? (
+            <p
+              role="alert"
+              className={
+                invoice.status === 'failed'
+                  ? 'rounded-md bg-red-50 px-4 py-3 text-sm text-red-700'
+                  : 'rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800'
+              }
+            >
               {invoice.error_message}
             </p>
           ) : null}

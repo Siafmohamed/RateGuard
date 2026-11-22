@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Content\Models\Post;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -17,6 +19,8 @@ use Tests\TestCase;
  */
 class SpaCatchAllTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -38,32 +42,45 @@ class SpaCatchAllTest extends TestCase
     }
 
     /**
-     * One post and one page, keyed off the rest_route that
-     * WordPressContentClient always sends.
+     * A published post as the importer would have stored it (posts are no
+     * longer fetched over HTTP).
+     */
+    private function createPost(): Post
+    {
+        return Post::create([
+            'wp_id' => 1234,
+            'slug' => 'hello-rateguard',
+            'title' => 'Hello RateGuard',
+            'excerpt' => 'Excerpt',
+            'content_html' => '<p>Body</p>',
+            'author' => 'Jane Doe',
+            'featured_image_url' => null,
+            'categories' => [],
+            'seo' => null,
+            'status' => 'publish',
+            'published_at' => '2026-10-01T12:00:00',
+            'modified_at' => '2026-10-02T08:30:00',
+        ]);
+    }
+
+    /**
+     * WordPress *pages* (docs) are still fetched over HTTP.
      */
     private function fakeLists(): void
     {
-        Http::fake(function (Request $request) {
-            $url = urldecode($request->url());
-
-            $type = str_contains($url, '/wp/v2/pages') ? 'page' : 'post';
-
-            $item = [
-                'id' => 1234,
-                'date_gmt' => '2026-10-01T12:00:00',
-                'modified_gmt' => '2026-10-02T08:30:00',
-                'slug' => $type === 'page' ? 'getting-started' : 'hello-rateguard',
-                'status' => 'publish',
-                'title' => ['rendered' => $type === 'page' ? 'Getting started' : 'Hello RateGuard'],
-                'content' => ['rendered' => '<p>Body</p>'],
-                'excerpt' => ['rendered' => '<p>Excerpt</p>'],
-            ];
-
-            return Http::response([$item], 200, [
-                'X-WP-Total' => '1',
-                'X-WP-TotalPages' => '1',
-            ]);
-        });
+        Http::fake(fn (Request $request) => Http::response([[
+            'id' => 1234,
+            'date_gmt' => '2026-10-01T12:00:00',
+            'modified_gmt' => '2026-10-02T08:30:00',
+            'slug' => 'getting-started',
+            'status' => 'publish',
+            'title' => ['rendered' => 'Getting started'],
+            'content' => ['rendered' => '<p>Body</p>'],
+            'excerpt' => ['rendered' => '<p>Excerpt</p>'],
+        ]], 200, [
+            'X-WP-Total' => '1',
+            'X-WP-TotalPages' => '1',
+        ]));
     }
 
     /**
@@ -106,6 +123,8 @@ class SpaCatchAllTest extends TestCase
 
     public function test_the_blog_route_still_serves_the_indexable_seo_shell(): void
     {
+        $this->createPost();
+
         $body = (string) $this->get('/blog')->assertOk()->getContent();
 
         $this->assertStringContainsString('<meta name="robots" content="index,follow">', $body);
@@ -115,6 +134,8 @@ class SpaCatchAllTest extends TestCase
 
     public function test_sitemap_and_robots_are_not_swallowed(): void
     {
+        $this->createPost();
+
         $robots = $this->get('/robots.txt')->assertOk();
 
         $this->assertStringContainsString(

@@ -6,6 +6,8 @@ use App\Domain\Audit\Data\FindingData;
 use App\Domain\Audit\Models\AuditFinding;
 use App\Domain\Audit\Services\FindingWriter;
 use App\Domain\Claims\Models\Claim;
+use App\Domain\Contracts\Models\Contract;
+use App\Domain\Contracts\Models\ContractRate;
 use App\Domain\Invoices\Jobs\AuditInvoiceJob;
 use App\Domain\Invoices\Jobs\InvoicePipeline;
 use App\Domain\Invoices\Models\Invoice;
@@ -14,6 +16,7 @@ use App\Enums\Role;
 use App\Models\Carrier;
 use App\Models\Organization;
 use App\Models\User;
+use App\Support\Tenancy\CurrentOrganization;
 use Database\Seeders\DemoDataSeeder;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
@@ -194,6 +197,84 @@ class InvoicePipelineTest extends TestCase
         $response->assertJsonStructure(['data' => ['error_message', 'audited_at']]);
     }
 
+    public function test_an_audited_invoice_without_a_contract_explains_that_no_rules_ran(): void
+    {
+        Storage::fake('local');
+        $this->carrier('UPS');
+        [$user] = $this->organizationWithUser(Role::Admin);
+
+        // A valid invoice with no anomalies, uploaded without a contract for the
+        // carrier: the audit can therefore raise no overcharge finding.
+        $csv = implode("\n", [
+            'tracking_number,charge_type,description,billed_weight_kg,amount',
+            '1ZTEST0009,shipping,Standard delivery,1.5,85.00',
+        ]);
+
+        $this->upload($user, $csv, 'ACME-NOCONTRACT-0001')->assertStatus(202);
+
+        $invoice = $this->invoiceByNumber('ACME-NOCONTRACT-0001');
+
+        $this->assertSame(InvoiceStatus::Audited->value, $invoice->status);
+        $this->assertNull($invoice->contract_id);
+        $this->assertSame(0, AuditFinding::withoutTenancy()->where('invoice_id', $invoice->id)->count());
+
+        // Rather than silently reporting "0 findings", the audit says why.
+        $this->assertNotNull($invoice->error_message);
+        $this->assertStringContainsString('No contract is linked', $invoice->error_message);
+    }
+
+    public function test_the_upload_links_the_contract_for_the_carrier_so_the_audit_can_compare(): void
+    {
+        Storage::fake('local');
+        $this->carrier('UPS');
+        [$user, $organization] = $this->organizationWithUser(Role::Admin);
+
+        // A contract for this organization + carrier that only allows fuel.
+        app(CurrentOrganization::class)->set($organization);
+
+        $contract = Contract::create([
+            'carrier_id' => Carrier::firstOrFail()->id,
+            'name' => 'Acme / UPS 2026',
+            'effective_from' => '2026-01-01',
+            'effective_to' => null,
+            'dim_divisor' => 5000,
+        ]);
+
+        ContractRate::create([
+            'contract_id' => $contract->id,
+            'service_level' => 'GROUND',
+            'charge_type' => 'fuel',
+            'zone' => null,
+            'min_weight_kg' => 0,
+            'max_weight_kg' => 0,
+            'rate_cents' => 1200,
+        ]);
+
+        app(CurrentOrganization::class)->forget();
+
+        $csv = implode("\n", [
+            'tracking_number,charge_type,description,billed_weight_kg,amount',
+            '1ZTESTLINK1,demand,Demand surcharge,,12.50',
+        ]);
+
+        $this->upload($user, $csv, 'ACME-LINK-0001')->assertStatus(202);
+
+        $invoice = $this->invoiceByNumber('ACME-LINK-0001');
+
+        // The upload linked the contract...
+        $this->assertSame($contract->id, $invoice->contract_id);
+
+        // ...so the audit compared the invoice against it and flagged the
+        // "demand" surcharge the contract does not allow.
+        $finding = AuditFinding::withoutTenancy()
+            ->where('invoice_id', $invoice->id)
+            ->where('rule', 'unauthorized_surcharge')
+            ->first();
+
+        $this->assertNotNull($finding);
+        $this->assertSame(1250, $finding->recoverable_cents);
+    }
+
     public function test_findings_endpoint_lists_rule_severity_and_tracking_number(): void
     {
         Storage::fake('local');
@@ -313,6 +394,28 @@ class InvoicePipelineTest extends TestCase
 
         // Nothing was imported.
         $this->assertSame(0, $invoice->lines()->count());
+    }
+
+    public function test_a_non_invoice_csv_header_is_rejected_before_creating_an_invoice(): void
+    {
+        Storage::fake('local');
+        $this->carrier('UPS');
+        [$user] = $this->organizationWithUser(Role::Admin);
+
+        $this->upload(
+            $user,
+            "index,ean,stock,price\n1,2010743556564,669,135\n",
+            'ACME-INVENTORY-0001',
+        )
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('file')
+            ->assertJsonPath(
+                'errors.file.0',
+                'The invoice CSV must have this header row: tracking_number,charge_type,description,billed_weight_kg,amount.',
+            );
+
+        $this->assertSame(0, Invoice::withoutTenancy()->count());
+        $this->assertSame([], Storage::disk('local')->allFiles());
     }
 
     public function test_a_job_cannot_read_an_invoice_of_another_organization(): void

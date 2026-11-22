@@ -2,17 +2,24 @@
 
 namespace Tests\Feature\Seo;
 
+use App\Domain\Content\Models\Post;
+use App\Domain\Content\Support\ContentSanitizer;
+use App\Domain\Content\Support\WpFields;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * The SEO shell Laravel serves for /blog and /docs. Everything is built from the
- * cached content gateway (Http::fake), never a real WordPress, and the shell is
- * exercised both with a built SPA present and missing.
+ * The SEO shell Laravel serves for /blog and /docs. Post pages are built from
+ * the imported `posts` table (posts no longer hit WordPress), while docs are
+ * still WordPress *pages* served through the cached content gateway
+ * (Http::fake). The shell is exercised both with a built SPA present and missing.
  */
 class SeoShellTest extends TestCase
 {
+    use RefreshDatabase;
+
     private ?string $indexPath = null;
 
     protected function setUp(): void
@@ -77,12 +84,51 @@ class SeoShellTest extends TestCase
     }
 
     /**
-     * @param  array<string, mixed>  $post
+     * Seed the local table exactly as the importer would, from a
+     * WordPress-shaped payload.
+     *
+     * @param  array<string, mixed>  $overrides
      */
-    private function fakePost(array $post, int $status = 200): void
+    private function createPost(array $overrides = []): Post
     {
+        $wp = $this->wpPost($overrides);
+
+        return Post::create([
+            'wp_id' => (int) $wp['id'],
+            'slug' => (string) $wp['slug'],
+            'title' => WpFields::text(data_get($wp, 'title.rendered')),
+            'excerpt' => WpFields::text(data_get($wp, 'excerpt.rendered')),
+            'content_html' => ContentSanitizer::sanitize(data_get($wp, 'content.rendered')),
+            'author' => WpFields::author($wp),
+            'featured_image_url' => WpFields::featuredImageUrl($wp),
+            'categories' => WpFields::categories($wp),
+            'seo' => WpFields::seo($wp),
+            'status' => 'publish',
+            'published_at' => WpFields::iso($wp['date_gmt'] ?? null),
+            'modified_at' => WpFields::iso($wp['modified_gmt'] ?? null),
+        ]);
+    }
+
+    /**
+     * Fake a WordPress *page* response for the /docs routes.
+     *
+     * @param  array<string, mixed>  $overrides
+     */
+    private function fakePage(array $overrides = [], int $status = 200): void
+    {
+        $page = array_replace([
+            'id' => 1234,
+            'date_gmt' => '2026-10-01T12:00:00',
+            'modified_gmt' => '2026-10-02T08:30:00',
+            'slug' => 'getting-started',
+            'status' => 'publish',
+            'title' => ['rendered' => 'Getting started'],
+            'content' => ['rendered' => '<p>Intro &amp; details.</p>'],
+            'excerpt' => ['rendered' => '<p>Short &amp; sweet summary.</p>'],
+        ], $overrides);
+
         Http::fake([
-            'cms.test/*' => Http::response([$post], $status, [
+            'cms.test/*' => Http::response([$page], $status, [
                 'X-WP-Total' => '1',
                 'X-WP-TotalPages' => '1',
             ]),
@@ -121,7 +167,7 @@ class SeoShellTest extends TestCase
 
     public function test_a_post_page_serves_the_required_head_tags_and_valid_json_ld(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $response = $this->get('/blog/hello-rateguard');
 
@@ -169,11 +215,11 @@ class SeoShellTest extends TestCase
         // HTML entities WordPress emits are decoded.
         $payload = '&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;';
 
-        $this->fakePost($this->wpPost([
+        $this->createPost([
             'title' => ['rendered' => $payload],
             'excerpt' => ['rendered' => '<p>'.$payload.'</p>'],
             'yoast_head_json' => [],
-        ]));
+        ]);
 
         $body = (string) $this->get('/blog/hello-rateguard')->assertOk()->getContent();
 
@@ -186,7 +232,7 @@ class SeoShellTest extends TestCase
 
     public function test_the_canonical_link_ignores_a_spoofed_host_header(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $body = (string) $this->call('GET', 'https://evil.example/blog/hello-rateguard')
             ->assertOk()
@@ -201,7 +247,7 @@ class SeoShellTest extends TestCase
 
     public function test_an_unknown_slug_returns_a_404_with_noindex_and_the_shell(): void
     {
-        Http::fake(['cms.test/*' => Http::response([], 200)]);
+        $this->createPost();
 
         $response = $this->get('/blog/does-not-exist');
 
@@ -214,11 +260,22 @@ class SeoShellTest extends TestCase
         $this->assertStringContainsString('<div id="root"></div>', $body);
     }
 
+    public function test_a_non_latin_slug_serves_the_seo_shell(): void
+    {
+        // WordPress stores the slug percent-encoded; the route must still match
+        // once the router has decoded it.
+        $this->createPost(['slug' => '%d9%85%d8%b1%d8%ad%d8%a8%d8%a7']);
+
+        $this->get('/blog/'.rawurlencode('مرحبا'))
+            ->assertOk()
+            ->assertSee('https://rateguard.test/blog/%d9%85%d8%b1%d8%ad%d8%a8%d8%a7', false);
+    }
+
     public function test_it_returns_503_with_retry_after_when_wordpress_is_down(): void
     {
         Http::fake(['cms.test/*' => Http::response(['code' => 'service_unavailable'], 503)]);
 
-        $response = $this->get('/blog/hello-rateguard');
+        $response = $this->get('/docs/getting-started');
 
         $response->assertStatus(503)->assertHeader('Retry-After', '60');
 
@@ -237,35 +294,43 @@ class SeoShellTest extends TestCase
                 return Http::response(['code' => 'service_unavailable'], 503);
             }
 
-            return Http::response([$this->wpPost()], 200, [
+            return Http::response([[
+                'id' => 7,
+                'slug' => 'getting-started',
+                'title' => ['rendered' => 'Getting started'],
+                'content' => ['rendered' => '<p>Body</p>'],
+                'excerpt' => ['rendered' => '<p>Excerpt</p>'],
+                'date_gmt' => '2026-10-01T12:00:00',
+                'modified_gmt' => '2026-10-02T08:30:00',
+            ]], 200, [
                 'X-WP-Total' => '1',
                 'X-WP-TotalPages' => '1',
             ]);
         });
 
-        $this->get('/blog/hello-rateguard')->assertOk()->assertHeaderMissing('X-Content-Stale');
+        $this->get('/docs/getting-started')->assertOk()->assertHeaderMissing('X-Content-Stale');
 
         $down = true;
         $this->travel(3)->seconds();
 
-        $this->get('/blog/hello-rateguard')
+        $this->get('/docs/getting-started')
             ->assertOk()
             ->assertHeader('X-Content-Stale', 'true');
     }
 
     public function test_the_second_request_is_served_from_cache_without_calling_wordpress(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->fakePage();
 
-        $this->get('/blog/hello-rateguard')->assertOk();
-        $this->get('/blog/hello-rateguard')->assertOk();
+        $this->get('/docs/getting-started')->assertOk();
+        $this->get('/docs/getting-started')->assertOk();
 
         Http::assertSentCount(1);
     }
 
     public function test_an_etag_yields_a_304_on_repeat_requests(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $first = $this->get('/blog/hello-rateguard')->assertOk();
         $etag = $first->headers->get('ETag');
@@ -279,7 +344,7 @@ class SeoShellTest extends TestCase
 
     public function test_the_dev_fallback_shell_is_used_when_there_is_no_build(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $body = (string) $this->get('/blog/hello-rateguard')->assertOk()->getContent();
 
@@ -292,7 +357,7 @@ class SeoShellTest extends TestCase
     {
         $this->writeIndexFile();
 
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $body = (string) $this->get('/blog/hello-rateguard')->assertOk()->getContent();
 
@@ -314,7 +379,7 @@ class SeoShellTest extends TestCase
 
     public function test_the_blog_index_lists_posts_without_article_json_ld(): void
     {
-        $this->fakePost($this->wpPost());
+        $this->createPost();
 
         $body = (string) $this->get('/blog')->assertOk()->getContent();
 
@@ -327,11 +392,7 @@ class SeoShellTest extends TestCase
 
     public function test_a_docs_page_uses_the_tech_article_json_ld(): void
     {
-        $this->fakePost($this->wpPost([
-            'slug' => 'getting-started',
-            'title' => ['rendered' => 'Getting started'],
-            'yoast_head_json' => [],
-        ]));
+        $this->fakePage();
 
         $body = (string) $this->get('/docs/getting-started')->assertOk()->getContent();
 

@@ -42,4 +42,26 @@ class Contract extends Model
     {
         return $this->hasMany(ContractRate::class);
     }
+
+    /**
+     * The contract that governs an invoice: the organization's contract for the
+     * carrier whose effective window covers the invoice date, falling back to
+     * the most recent one for that carrier. The query is tenancy-scoped, so —
+     * with an organization in context — it can only return this tenant's rows.
+     */
+    public static function matchingFor(int $carrierId, string $invoiceDate): ?self
+    {
+        return static::query()
+            ->where('carrier_id', $carrierId)
+            ->where('effective_from', '<=', $invoiceDate)
+            ->where(fn ($query) => $query
+                ->whereNull('effective_to')
+                ->orWhere('effective_to', '>=', $invoiceDate))
+            ->orderByDesc('effective_from')
+            ->first()
+            ?? static::query()
+                ->where('carrier_id', $carrierId)
+                ->orderByDesc('effective_from')
+                ->first();
+    }
 }

@@ -6,7 +6,6 @@ import { SkeletonRows } from '@/components/ui/Skeleton'
 import { useActiveOrganization } from '@/hooks/useActiveOrganization'
 import {
   cancelSubscription,
-  createCheckout,
   fetchBilling,
   openBillingPortal,
   resumeSubscription,
@@ -29,8 +28,9 @@ function usagePercent(used: number, limit: number | null | undefined): number | 
 
 /**
  * Billing overview. Only an owner sees the mutating controls; the plan cards
- * are shown to everyone so the upgrade path is discoverable, but the checkout
- * call itself is owner-only (mirroring the server policy).
+ * are shown to everyone so the upgrade path is discoverable. Checkout is not
+ * wired up yet (no payment provider), so the upgrade affordance is advertised
+ * as "Payments coming soon" rather than firing a call that would 501.
  */
 export function BillingPage() {
   const { role } = useActiveOrganization()
@@ -52,13 +52,6 @@ export function BillingPage() {
   function reportError(error: unknown) {
     pushToast(error instanceof Error ? error.message : 'That action failed.')
   }
-
-  const checkoutMutation = useMutation({
-    mutationFn: (planCode: string) => createCheckout(planCode),
-    // Stripe hosts the payment page, so we hand the whole window over to it.
-    onSuccess: (url) => window.location.assign(url),
-    onError: reportError,
-  })
 
   const portalMutation = useMutation({
     mutationFn: () => openBillingPortal(),
@@ -107,7 +100,8 @@ export function BillingPage() {
   }
 
   const billing = query.data
-  const percent = billing ? usagePercent(billing.invoices_used, billing.plan?.invoice_limit) : null
+  const limit = billing?.plan?.invoice_limit ?? null
+  const percent = billing ? usagePercent(billing.invoices_used, limit) : null
   const currentPlanCode = billing?.plan?.code ?? null
 
   return (
@@ -137,10 +131,12 @@ export function BillingPage() {
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <p className="text-xs uppercase tracking-wide text-slate-500">Invoices used</p>
+          <p className="text-xs uppercase tracking-wide text-slate-500">Invoices this month</p>
           <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-            {billing?.invoices_used ?? 0}
-            {billing?.plan?.invoice_limit ? ` / ${billing.plan.invoice_limit}` : ''}
+            {billing ? `${billing.invoices_used} / ${limit ?? '∞'}` : '—'}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {limit === null ? 'Unlimited invoices on this plan' : 'invoices used this month'}
           </p>
           {percent !== null ? (
             <div
@@ -217,12 +213,12 @@ export function BillingPage() {
                     Current plan
                   </Button>
                 ) : (
-                  <Button
-                    disabled={!isOwner}
-                    loading={checkoutMutation.isPending && checkoutMutation.variables === plan.code}
-                    onClick={() => checkoutMutation.mutate(plan.code)}
-                  >
-                    Upgrade
+                  // No payment provider is integrated yet, so the upgrade path is
+                  // advertised rather than faked: the button is inert and says why.
+                  // The backend still answers 501 payments_not_available if called
+                  // directly, and the client turns that into a friendly toast.
+                  <Button disabled title="Payments coming soon">
+                    Payments coming soon
                   </Button>
                 )}
               </div>

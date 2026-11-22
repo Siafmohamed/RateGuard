@@ -21,6 +21,15 @@ export default defineConfig({
     proxy: {
       '/api': { target: proxyTarget, changeOrigin: true },
       '/sanctum': { target: proxyTarget, changeOrigin: true },
+      // Headless WordPress. The browser calls /wp-api/index.php?rest_route=...
+      // (same-origin, so no CORS in development) and Vite forwards it to
+      // WordPress with the /wp-api prefix stripped. In production the app talks
+      // to WordPress directly via VITE_WP_BASE_URL instead of this proxy.
+      '/wp-api': {
+        target: 'http://localhost:8081',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/wp-api/, ''),
+      },
     },
   },
   build: {

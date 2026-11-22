@@ -18,6 +18,10 @@ use Illuminate\Support\Facades\Cache;
  * Adds caching, a stale fallback and a circuit breaker on top of the CMS
  * client, so a slow or down WordPress never turns into a slow or failing API.
  *
+ * Posts are the exception: they are imported into the local `posts` table
+ * (SyncPostsCommand) and served from there by PostRepository, so only pages
+ * and categories still reach WordPress.
+ *
  *  - Reads go through Cache::flexible (stale-while-revalidate): a value is
  *    served fresh for `fresh_ttl` and revalidated in the background after that.
  *  - Every successful fetch also writes a long-lived copy (stale_ttl). When
@@ -43,26 +47,25 @@ class ContentRepository
 
     public function __construct(
         private readonly ContentClientInterface $client,
+        private readonly PostRepository $postRepository,
     ) {}
 
     public function posts(int $page, int $perPage, ?string $category = null): PaginatedContent
     {
-        return $this->remember(
-            "posts:p{$page}:pp{$perPage}:c".($category ?: 'all'),
-            fn () => $this->client->posts($page, $perPage, $category),
-            fn (PaginatedContent $value) => $value->toArray(),
-            fn (array $value) => PaginatedContent::fromArray($value),
-        );
+        // Posts are imported into Laravel (see SyncPostsCommand), so they are
+        // read from the local table: there is no upstream call to cache and
+        // nothing that can go stale. Pages and categories still come from
+        // WordPress through the client below.
+        $this->stale = false;
+
+        return $this->postRepository->paginate($page, $perPage, $category);
     }
 
     public function post(string $slug): PostData
     {
-        return $this->remember(
-            "post:{$slug}",
-            fn () => $this->client->post($slug),
-            fn (PostData $value) => $value->toArray(),
-            fn (array $value) => PostData::fromArray($value),
-        );
+        $this->stale = false;
+
+        return $this->postRepository->find($slug);
     }
 
     public function pages(int $page, int $perPage): PaginatedPages

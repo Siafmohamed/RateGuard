@@ -98,9 +98,15 @@ class ContentController extends Controller
 
     private function validSlug(string $slug): string
     {
+        // Slugs are not always Latin: WordPress percent-encodes non-Latin
+        // titles, so an Arabic post is stored as "%d9%85%d8%b1..." and the
+        // router hands it over here already percent-decoded. Accept lower-case
+        // letters (any script), combining marks, digits, hyphens and a literal
+        // "%" (for an already-encoded slug) - while still rejecting genuinely
+        // malformed input such as "Not-A-Slug" (upper-case Latin).
         $validator = Validator::make(
             ['slug' => $slug],
-            ['slug' => ['required', 'string', 'regex:/^[a-z0-9-]+$/']],
+            ['slug' => ['required', 'string', 'regex:/^[\p{Ll}\p{Lo}\p{Nd}\p{M}%-]+$/u']],
         );
 
         return $validator->validate()['slug'];

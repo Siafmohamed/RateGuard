@@ -16,15 +16,20 @@ use Illuminate\Support\Facades\Route;
 |
 */
 Route::middleware('throttle:120,1')->group(function () {
+    // Slugs are not always Latin (WordPress percent-encodes non-Latin titles),
+    // so the constraint is Unicode-aware. Laravel compiles every route with the
+    // "utf8" option, so a \p{...} requirement is allowed here.
+    $slugPattern = '[\p{Ll}\p{Lo}\p{Nd}\p{M}%-]+';
+
     Route::get('/blog', [SeoController::class, 'posts'])->name('seo.blog');
 
     // TODO: docs are WordPress *pages* for now; swap to a "docs" CPT later.
     Route::get('/docs/{slug}', [SeoController::class, 'page'])
-        ->where('slug', '[a-z0-9-]+')
+        ->where('slug', $slugPattern)
         ->name('seo.page');
 
     Route::get('/blog/{slug}', [SeoController::class, 'post'])
-        ->where('slug', '[a-z0-9-]+')
+        ->where('slug', $slugPattern)
         ->name('seo.post');
 
     Route::get('/sitemap.xml', [SeoController::class, 'sitemap'])->name('seo.sitemap');

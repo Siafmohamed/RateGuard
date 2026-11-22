@@ -1,0 +1,6 @@
+# Shell scripts must reach the Linux image with LF endings, or the shebang
+# breaks. docker/render/entrypoint.sh is executed directly as the container
+# ENTRYPOINT, so this matters even when the commit is made from Windows.
+* text=auto eol=lf
+
+*.sh text eol=lf

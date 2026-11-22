@@ -1,0 +1,31 @@
+# Build context for docker/render/Dockerfile is the REPOSITORY ROOT, so this
+# file keeps secrets, installed dependencies and local runtime state out of the
+# image. None of it is needed at build time: the SPA is rebuilt inside the
+# image and composer runs its own install.
+
+# --- Secrets ---------------------------------------------------------------
+# A real .env must never end up in an image layer.
+**/.env
+**/.env.*
+
+# --- Installed dependencies ------------------------------------------------
+# Copied in by `npm ci` / `composer install` inside the image instead.
+**/node_modules
+api/vendor
+
+# --- Build output ----------------------------------------------------------
+# Rebuilt by stage 1; copying a stale local build would ship the wrong SPA.
+frontend/dist
+
+# --- Local runtime state ---------------------------------------------------
+api/storage/logs/*
+api/storage/framework/cache/data/*
+api/storage/framework/sessions/*
+api/storage/framework/views/*
+api/bootstrap/cache/*.php
+
+# --- Tooling / VCS ---------------------------------------------------------
+.git
+.github
+**/*.log
+**/.DS_Store
