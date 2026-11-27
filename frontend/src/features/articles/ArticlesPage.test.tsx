@@ -1,6 +1,6 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { http, HttpResponse } from 'msw'
+import { http, HttpResponse, type JsonBodyType } from 'msw'
 import { describe, expect, it } from 'vitest'
 
 import { ArticlesPage } from '@/features/articles/ArticlesPage'
@@ -24,7 +24,7 @@ const POST_WITHOUT_CONTENT = {
 }
 
 /** The list is the only WordPress call this page makes. */
-function listHandler(payload: unknown, status = 200) {
+function listHandler(payload: JsonBodyType, status = 200) {
   return http.get('/wp-api/index.php', () => HttpResponse.json(payload, { status }))
 }
 
