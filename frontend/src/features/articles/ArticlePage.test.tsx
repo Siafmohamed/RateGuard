@@ -13,32 +13,39 @@ const XSS_CONTENT =
   '<img src="x" onerror="window.__pwned = true">' +
   '<a href="javascript:alert(1)">bad</a>'
 
-function renderArticle(id: string) {
+/** A gateway `ContentPost`, shaped for the single-post envelope. */
+const BASE_POST = {
+  id: 1,
+  slug: 'a-dangerous-post',
+  title: 'A dangerous post',
+  excerpt: '',
+  content_html: '',
+  published_at: '2026-11-10T09:00:00',
+  modified_at: null,
+  featured_image_url: null,
+  author: null,
+  categories: [],
+  seo: null,
+}
+
+function renderArticle(slug: string) {
   return renderWithProviders(
     <Routes>
-      <Route path="/articles/:id" element={<ArticlePage />} />
+      <Route path="/articles/:slug" element={<ArticlePage />} />
     </Routes>,
-    { route: `/articles/${id}` },
+    { route: `/articles/${slug}` },
   )
 }
 
 function postHandler(payload: JsonBodyType, status = 200) {
-  return http.get('/wp-api/index.php', () => HttpResponse.json(payload, { status }))
+  return http.get('/api/v1/content/posts/:slug', () => HttpResponse.json(payload, { status }))
 }
 
 describe('ArticlePage', () => {
-  it('sanitises content.rendered before it reaches the DOM', async () => {
-    server.use(
-      postHandler({
-        id: 1,
-        date: '2026-11-10T09:00:00',
-        title: { rendered: 'A dangerous post' },
-        excerpt: { rendered: '' },
-        content: { rendered: XSS_CONTENT },
-      }),
-    )
+  it('sanitises content before it reaches the DOM', async () => {
+    server.use(postHandler({ data: { ...BASE_POST, content_html: XSS_CONTENT } }))
 
-    const { container } = renderArticle('1')
+    const { container } = renderArticle('a-dangerous-post')
 
     expect(await screen.findByText('Safe intro')).toBeInTheDocument()
 
@@ -56,15 +63,11 @@ describe('ArticlePage', () => {
   it('explains an empty article instead of rendering a blank page', async () => {
     server.use(
       postHandler({
-        id: 5,
-        date: '2026-11-12T09:00:00',
-        title: { rendered: 'مقالة بلا محتوى' },
-        excerpt: { rendered: '' },
-        content: { rendered: '' },
+        data: { ...BASE_POST, id: 5, slug: 'empty', title: 'مقالة بلا محتوى' },
       }),
     )
 
-    renderArticle('5')
+    renderArticle('empty')
 
     expect(await screen.findByText('This article has no content yet')).toBeInTheDocument()
   })

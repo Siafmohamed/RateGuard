@@ -32,11 +32,11 @@ export const router = createBrowserRouter([
       { path: 'blog/:slug', element: <BlogPostPage /> },
       { path: 'docs/:slug', element: <DocPage /> },
 
-      // Public articles, read straight from WordPress (see features/articles).
-      // Addressed by id because the WordPress slugs here are Arabic and
-      // percent-encoded.
+      // Public articles, read through the Laravel content gateway
+      // (see features/articles). Addressed by slug; Arabic slugs are
+      // percent-encoded so the link encodes them.
       { path: 'articles', element: <ArticlesPage /> },
-      { path: 'articles/:id', element: <ArticlePage /> },
+      { path: 'articles/:slug', element: <ArticlePage /> },
 
       {
         path: 'app',

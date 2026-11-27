@@ -7,34 +7,56 @@ import { ArticlesPage } from '@/features/articles/ArticlesPage'
 import { renderWithProviders } from '@/test/render'
 import { server } from '@/test/server'
 
+/**
+ * Gateway payloads. `GET /content/posts` returns `{ data: PostPreview[], meta }`
+ * and the text fields are already entity-decoded server-side (WpFields::text),
+ * so a title arrives with a real en dash, not `&#8211;`.
+ */
 const POST_WITH_CONTENT = {
   id: 1,
-  date: '2026-11-10T09:00:00',
-  title: { rendered: 'RateGuard &#8211; Freight Audit' },
-  excerpt: { rendered: '<p>How we recover overcharges.</p>' },
-  content: { rendered: '<p>Every cent.</p>' },
+  slug: 'rateguard-freight-audit',
+  title: 'RateGuard – Freight Audit',
+  excerpt: 'How we recover overcharges.',
+  published_at: '2026-11-10T09:00:00',
+  modified_at: null,
+  featured_image_url: null,
+  author: null,
+  categories: [],
+  seo: null,
 }
 
 const POST_WITHOUT_CONTENT = {
   id: 5,
-  date: '2026-11-12T09:00:00',
-  title: { rendered: 'مقالة بلا محتوى' },
-  excerpt: { rendered: '' },
-  content: { rendered: '' },
+  slug: 'مقالة-بلا-محتوى',
+  title: 'مقالة بلا محتوى',
+  excerpt: '',
+  published_at: '2026-11-12T09:00:00',
+  modified_at: null,
+  featured_image_url: null,
+  author: null,
+  categories: [],
+  seo: null,
 }
 
-/** The list is the only WordPress call this page makes. */
+/** Build the paginated list envelope the gateway returns. */
+function listPayload(...posts: JsonBodyType[]): JsonBodyType {
+  return {
+    data: posts,
+    meta: { total: posts.length, total_pages: 1, page: 1, per_page: 20 },
+  }
+}
+
+/** The list is the only gateway call this page makes. */
 function listHandler(payload: JsonBodyType, status = 200) {
-  return http.get('/wp-api/index.php', () => HttpResponse.json(payload, { status }))
+  return http.get('/api/v1/content/posts', () => HttpResponse.json(payload, { status }))
 }
 
 describe('ArticlesPage', () => {
-  it('renders the list, decoding HTML entities in the title', async () => {
-    server.use(listHandler([POST_WITH_CONTENT, POST_WITHOUT_CONTENT]))
+  it('renders the list and links each article by its slug', async () => {
+    server.use(listHandler(listPayload(POST_WITH_CONTENT, POST_WITHOUT_CONTENT)))
 
     renderWithProviders(<ArticlesPage />)
 
-    // `&#8211;` must arrive as a readable en dash, not as raw markup or text.
     const headings = await screen.findAllByRole('heading', { level: 2 })
 
     expect(headings).toHaveLength(2)
@@ -45,12 +67,26 @@ describe('ArticlesPage', () => {
     // A post with an empty excerpt gets a placeholder rather than a blank row.
     expect(screen.getByText('No summary available.')).toBeInTheDocument()
 
-    // Articles are addressed by id: Arabic slugs are percent-encoded.
-    expect(screen.getByRole('link', { name: /RateGuard/ })).toHaveAttribute('href', '/articles/1')
+    expect(screen.getByRole('link', { name: /RateGuard/ })).toHaveAttribute(
+      'href',
+      '/articles/rateguard-freight-audit',
+    )
   })
 
-  it('shows the empty state when WordPress has no published posts', async () => {
-    server.use(listHandler([]))
+  it('percent-encodes an Arabic slug so it survives the URL', async () => {
+    const arabic = { ...POST_WITH_CONTENT, id: 7, slug: '%d9%85%d9%82%d8%a7%d9%84%d8%a9' }
+
+    server.use(listHandler(listPayload(arabic)))
+
+    renderWithProviders(<ArticlesPage />)
+
+    const link = await screen.findByRole('link', { name: /RateGuard/ })
+
+    expect(link).toHaveAttribute('href', `/articles/${encodeURIComponent(arabic.slug)}`)
+  })
+
+  it('shows the empty state when the gateway has no published posts', async () => {
+    server.use(listHandler(listPayload()))
 
     renderWithProviders(<ArticlesPage />)
 
@@ -61,13 +97,13 @@ describe('ArticlesPage', () => {
     let calls = 0
 
     server.use(
-      http.get('/wp-api/index.php', () => {
+      http.get('/api/v1/content/posts', () => {
         calls += 1
 
         // Fail once, then succeed: the retry button must re-issue the query.
         return calls === 1
           ? HttpResponse.json({ message: 'boom' }, { status: 500 })
-          : HttpResponse.json([POST_WITH_CONTENT])
+          : HttpResponse.json(listPayload(POST_WITH_CONTENT))
       }),
     )
 

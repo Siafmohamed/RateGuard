@@ -14,19 +14,20 @@ import {
 } from '@/features/articles/api'
 
 /**
- * A single article, addressed by **id** (WordPress slugs here are
- * percent-encoded Arabic, so they are unusable in a URL).
+ * A single article, addressed by **slug** through the Laravel content gateway.
+ * Arabic slugs are percent-encoded in the URL, so the route value is decoded by
+ * the router and re-encoded by the gateway when it queries WordPress.
  *
- * `content.rendered` is the only raw HTML on this page and it goes through
+ * `content` is the only raw HTML on this page and it goes through
  * `SanitizedHtml`, the app's single `dangerouslySetInnerHTML` site.
  */
 export function ArticlePage() {
-  const { id } = useParams<{ id: string }>()
+  const { slug } = useParams<{ slug: string }>()
 
   const query = useQuery({
-    queryKey: ['article', id],
-    queryFn: ({ signal }) => fetchPost(id as string, signal),
-    enabled: Boolean(id),
+    queryKey: ['article', slug],
+    queryFn: ({ signal }) => fetchPost(slug as string, signal),
+    enabled: Boolean(slug),
     staleTime: 60_000,
   })
 

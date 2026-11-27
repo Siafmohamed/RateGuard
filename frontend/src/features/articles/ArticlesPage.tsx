@@ -7,8 +7,9 @@ import { SkeletonRows } from '@/components/ui/Skeleton'
 import { fetchPosts, formatDate, featuredImageUrl, toPlainText } from '@/features/articles/api'
 
 /**
- * Public article index, read straight from WordPress (see features/articles).
- * Titles and excerpts arrive as HTML, so they are always reduced to plain text.
+ * Public article index, read through the Laravel content gateway
+ * (see features/articles). Titles and excerpts are always rendered as plain
+ * text, never as markup.
  */
 export function ArticlesPage() {
   const query = useQuery({
@@ -54,7 +55,12 @@ export function ArticlesPage() {
 
             return (
               <li key={article.id} className="py-5">
-                <Link to={`/articles/${article.id}`} className="group flex gap-4">
+                {/* Slug, percent-encoded: the gateway's single-post route is by
+                    slug, and Arabic slugs are stored percent-encoded. */}
+                <Link
+                  to={`/articles/${encodeURIComponent(article.slug)}`}
+                  className="group flex gap-4"
+                >
                   {image ? (
                     <img
                       src={image}

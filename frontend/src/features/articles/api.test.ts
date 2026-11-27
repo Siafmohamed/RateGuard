@@ -3,125 +3,101 @@ import { describe, expect, it } from 'vitest'
 
 import {
   ArticlesApiError,
-  articleListSchema,
-  articleSchema,
   fetchPost,
   fetchPosts,
+  featuredImageUrl,
   formatDate,
   toPlainText,
 } from '@/features/articles/api'
 import { server } from '@/test/server'
 
 /**
- * Shaped like the real payload: Arabic titles, numeric entities, and one post
- * whose content and excerpt are legitimately empty (WordPress post id 5).
+ * Shaped like the gateway contract: `PostPreview` for the list (no
+ * `content_html`), `ContentPost` for the single post.
  */
-const POST_WITH_CONTENT = {
+const PREVIEW = {
   id: 1,
-  date: '2026-11-10T09:00:00',
-  title: { rendered: 'RateGuard &#8211; Freight Audit' },
-  excerpt: { rendered: '<p>How we recover overcharges.</p>' },
-  content: { rendered: '<p>Every cent.</p>' },
-  _embedded: { 'wp:featuredmedia': [{ source_url: 'https://example.test/cover.jpg' }] },
+  slug: 'rateguard-freight-audit',
+  title: 'RateGuard – Freight Audit',
+  excerpt: 'How we recover overcharges.',
+  published_at: '2026-11-10T09:00:00',
+  modified_at: null,
+  featured_image_url: 'https://example.test/cover.jpg',
+  author: 'Amira',
+  categories: [{ id: 3, slug: 'news', name: 'News', description: null }],
+  seo: null,
 }
 
-const POST_WITHOUT_CONTENT = {
-  id: 5,
-  date: '2026-11-12T09:00:00',
-  title: { rendered: 'مقالة بلا محتوى' },
-  excerpt: { rendered: '' },
-  content: { rendered: '' },
+const POST = {
+  ...PREVIEW,
+  content_html: '<p>Every cent.</p>',
 }
 
-describe('articles schema', () => {
-  it('accepts a post with content', () => {
-    const parsed = articleSchema.parse(POST_WITH_CONTENT)
-
-    expect(parsed._embedded?.['wp:featuredmedia']?.[0]?.source_url).toBe(
-      'https://example.test/cover.jpg',
-    )
-  })
-
-  it('accepts a post whose content and excerpt are empty', () => {
-    const parsed = articleSchema.parse(POST_WITHOUT_CONTENT)
-
-    expect(parsed.content.rendered).toBe('')
-    expect(parsed.excerpt.rendered).toBe('')
-  })
-
-  it('accepts the bare array the collection endpoint returns', () => {
-    const parsed = articleListSchema.parse([POST_WITH_CONTENT, POST_WITHOUT_CONTENT])
-
-    expect(parsed).toHaveLength(2)
-  })
-
-  it('rejects a post without an id', () => {
-    const withoutId = {
-      date: POST_WITH_CONTENT.date,
-      title: POST_WITH_CONTENT.title,
-      excerpt: POST_WITH_CONTENT.excerpt,
-      content: POST_WITH_CONTENT.content,
-    }
-
-    expect(articleSchema.safeParse(withoutId).success).toBe(false)
-  })
-
-  it('rejects a post whose title is not a rendered object', () => {
-    const malformed = { ...POST_WITH_CONTENT, title: 'just a string' }
-
-    expect(articleSchema.safeParse(malformed).success).toBe(false)
-  })
-})
+const META = { total: 1, total_pages: 1, page: 1, per_page: 20 }
 
 describe('fetchPosts', () => {
-  it('requests the posts route through index.php and returns validated articles', async () => {
+  it('reads the gateway list and maps it onto the article view model', async () => {
     const seen: { url: URL | null } = { url: null }
 
     server.use(
-      http.get('/wp-api/index.php', ({ request }) => {
+      http.get('/api/v1/content/posts', ({ request }) => {
         seen.url = new URL(request.url)
 
-        return HttpResponse.json([POST_WITH_CONTENT, POST_WITHOUT_CONTENT])
+        return HttpResponse.json({ data: [PREVIEW], meta: META })
       }),
     )
 
     const articles = await fetchPosts()
 
-    expect(articles).toHaveLength(2)
-    expect(articles[0]?.id).toBe(1)
+    expect(articles).toHaveLength(1)
+    expect(articles[0]).toMatchObject({
+      id: 1,
+      slug: 'rateguard-freight-audit',
+      date: '2026-11-10T09:00:00',
+    })
+    expect(articles[0]?.title.rendered).toBe('RateGuard – Freight Audit')
+    expect(featuredImageUrl(articles[0]!)).toBe('https://example.test/cover.jpg')
 
-    expect(seen.url?.searchParams.get('rest_route')).toBe('/wp/v2/posts')
+    expect(seen.url?.pathname).toBe('/api/v1/content/posts')
     expect(seen.url?.searchParams.get('per_page')).toBe('20')
-    expect(seen.url?.searchParams.get('_embed')).toBe('1')
   })
 
-  it('throws a clear error when the service returns an unexpected payload', async () => {
-    server.use(http.get('/wp-api/index.php', () => HttpResponse.json({ message: 'nope' })))
+  it('throws an ArticlesApiError when the gateway answers an unexpected payload', async () => {
+    server.use(http.get('/api/v1/content/posts', () => HttpResponse.json({ nope: true })))
 
     await expect(fetchPosts()).rejects.toBeInstanceOf(ArticlesApiError)
   })
 })
 
 describe('fetchPost', () => {
+  it('unwraps the single-post envelope and keeps the body', async () => {
+    server.use(http.get('/api/v1/content/posts/:slug', () => HttpResponse.json({ data: POST })))
+
+    const article = await fetchPost('rateguard-freight-audit')
+
+    expect(article.slug).toBe('rateguard-freight-audit')
+    expect(article.content.rendered).toBe('<p>Every cent.</p>')
+  })
+
   it('carries the HTTP status on the error', async () => {
     server.use(
-      http.get('/wp-api/index.php', () =>
+      http.get('/api/v1/content/posts/:slug', () =>
         HttpResponse.json({ message: 'not found' }, { status: 404 }),
       ),
     )
 
-    await expect(fetchPost(999)).rejects.toMatchObject({ status: 404 })
+    await expect(fetchPost('missing')).rejects.toMatchObject({ status: 404 })
   })
 
   it('reports a transport failure as status 0', async () => {
-    server.use(http.get('/wp-api/index.php', () => HttpResponse.error()))
+    server.use(http.get('/api/v1/content/posts/:slug', () => HttpResponse.error()))
 
-    await expect(fetchPost(1)).rejects.toMatchObject({ status: 0 })
+    await expect(fetchPost('x')).rejects.toMatchObject({ status: 0 })
   })
 })
 
 describe('toPlainText', () => {
-  it('decodes WordPress entities and strips markup', () => {
+  it('decodes entities and strips markup', () => {
     expect(toPlainText('RateGuard &#8211; Freight Audit')).toBe('RateGuard – Freight Audit')
     expect(toPlainText('<p>How we <strong>recover</strong></p>')).toBe('How we recover')
     expect(toPlainText('')).toBe('')
