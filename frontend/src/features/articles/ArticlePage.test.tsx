@@ -1,5 +1,5 @@
 import { screen } from '@testing-library/react'
-import { http, HttpResponse } from 'msw'
+import { http, HttpResponse, type JsonBodyType } from 'msw'
 import { Route, Routes } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 
@@ -22,7 +22,7 @@ function renderArticle(id: string) {
   )
 }
 
-function postHandler(payload: unknown, status = 200) {
+function postHandler(payload: JsonBodyType, status = 200) {
   return http.get('/wp-api/index.php', () => HttpResponse.json(payload, { status }))
 }
 
