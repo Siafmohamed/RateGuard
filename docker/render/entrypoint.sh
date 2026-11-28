@@ -55,6 +55,15 @@ else
     echo "[entrypoint] DB_HOST is empty - skipping migrations"
 fi
 
+# --- Contracts --------------------------------------------------------------
+# The audit engine only runs overcharge rules when a contract is linked to the
+# invoice, and there is no contracts UI/API to create one in-app yet. So seed a
+# default contract + rate card for every organization/carrier. Idempotent
+# (updateOrCreate) and safe on every boot; skippable with SKIP_SEEDING=true.
+if [ -n "${DB_HOST:-}" ] && [ "${SKIP_SEEDING:-false}" != "true" ]; then
+    php artisan db:seed --class=ContractsSeeder --force
+fi
+
 # --- Caches -----------------------------------------------------------------
 # `route:cache` is deliberately NOT run: /api/v1/health is defined with a
 # closure (api/routes/api.php) and route caching cannot serialise closures.
